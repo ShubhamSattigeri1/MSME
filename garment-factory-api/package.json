@@ -1,0 +1,23 @@
+{
+  "name": "garment-factory-local",
+  "version": "1.0.0",
+  "description": "Garment factory management local backend scripts",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "demo": "node src/scripts/demo.js",
+    "orders:list": "node src/scripts/local.js orders:list",
+    "materials:list": "node src/scripts/local.js materials:list",
+    "materials:low-stock": "node src/scripts/local.js materials:low-stock",
+    "bom:list": "node src/scripts/local.js bom:list",
+    "pricing:settings": "node src/scripts/local.js pricing:settings",
+    "purchase-orders:list": "node src/scripts/local.js purchase-orders:list"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "pg": "^8.13.1"
+  }
+}
