@@ -38,8 +38,8 @@ async function addMaterial(payload) {
 async function updateMaterial(id, updates) {
   assertUuid(id, 'id');
 
-  if (updates.qty_available === undefined && updates.unit_cost === undefined) {
-    throw new Error('qty_available or unit_cost is required');
+  if (updates.qty_available === undefined && updates.unit_cost === undefined && updates.supplier_lead_days === undefined) {
+    throw new Error('qty_available, unit_cost, or supplier_lead_days is required');
   }
 
   const assignments = [];
@@ -55,6 +55,13 @@ async function updateMaterial(id, updates) {
     assertNonNegativeNumber(updates.unit_cost, 'unit_cost');
     values.push(updates.unit_cost);
     assignments.push(`unit_cost = $${values.length}`);
+  }
+
+  if (updates.supplier_lead_days !== undefined) {
+    const days = Number(updates.supplier_lead_days);
+    if (!Number.isInteger(days) || days < 0) throw new Error('supplier_lead_days must be a non-negative integer');
+    values.push(days);
+    assignments.push(`supplier_lead_days = $${values.length}`);
   }
 
   values.push(id);

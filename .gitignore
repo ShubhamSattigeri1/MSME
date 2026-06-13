@@ -1,3 +1,13 @@
 garment-factory-api/node_modules/
 garment-factory-api/.env
 garment-factory-api/.env.example
+garment-factory-buyer-portal/.next
+garment-factory-buyer-portal/.node_modules
+garment-factory-buyer-portal/.env.local
+garment-factory-buyer-portal-v2/.env.local
+garment-factory-dashboard/.env.local
+garment-factory-buyer-portal/.next
+node_modules/
+.next/
+.env
+.env.local

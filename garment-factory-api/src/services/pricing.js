@@ -14,6 +14,7 @@ async function updatePricingSettings(payload) {
   const overhead = payload.overhead_per_unit;
   const wastage = payload.default_wastage_pct !== undefined ? payload.default_wastage_pct : payload.wastage_pct;
   const margin = payload.default_margin_pct !== undefined ? payload.default_margin_pct : payload.margin_pct;
+  const minimumMargin = payload.minimum_margin_pct !== undefined ? payload.minimum_margin_pct : undefined;
 
   assertNonNegativeNumber(labour, 'labour_cost_per_min');
   assertNonNegativeNumber(overhead, 'overhead_per_unit');
@@ -23,40 +24,54 @@ async function updatePricingSettings(payload) {
   if (Number(wastage) < 0 || Number(wastage) > 1) throw new Error('wastage_pct must be between 0 and 1');
   if (Number(margin) < 0 || Number(margin) > 1) throw new Error('margin_pct must be between 0 and 1');
 
+  if (minimumMargin !== undefined) {
+    assertNonNegativeNumber(minimumMargin, 'minimum_margin_pct');
+    if (Number(minimumMargin) < 0 || Number(minimumMargin) > 0.5) throw new Error('minimum_margin_pct must be between 0 and 0.5');
+  }
+
   const current = await getPricingSettings();
 
   if (!current) {
     const insertResult = await pool.query(
       `INSERT INTO pricing_settings
-         (labour_cost_per_min, overhead_per_unit, default_wastage_pct, default_margin_pct)
-       VALUES ($1, $2, $3, $4)
+         (labour_cost_per_min, overhead_per_unit, default_wastage_pct, default_margin_pct, minimum_margin_pct)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
       [
         labour,
         overhead,
         wastage,
         margin,
+        minimumMargin !== undefined ? minimumMargin : 0.05,
       ]
     );
     return insertResult.rows[0];
   }
 
+  const fields = [];
+  const values = [];
+  let idx = 1;
+
+  fields.push('labour_cost_per_min = $' + idx++);
+  values.push(labour);
+  fields.push('overhead_per_unit = $' + idx++);
+  values.push(overhead);
+  fields.push('default_wastage_pct = $' + idx++);
+  values.push(wastage);
+  fields.push('default_margin_pct = $' + idx++);
+  values.push(margin);
+
+  if (minimumMargin !== undefined) {
+    fields.push('minimum_margin_pct = $' + idx++);
+    values.push(minimumMargin);
+  }
+
+  values.push(current.id);
+  fields.push('updated_at = NOW()');
+
   const updateResult = await pool.query(
-    `UPDATE pricing_settings
-     SET labour_cost_per_min = $1,
-         overhead_per_unit = $2,
-         default_wastage_pct = $3,
-         default_margin_pct = $4,
-         updated_at = NOW()
-     WHERE id = $5
-     RETURNING *`,
-    [
-      labour,
-      overhead,
-      wastage,
-      margin,
-      current.id,
-    ]
+    `UPDATE pricing_settings SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+    values
   );
 
   return updateResult.rows[0];

@@ -1,4 +1,5 @@
 const pool = require('../db');
+const crypto = require('crypto');
 const { assertUuid } = require('../utils/validation');
 
 function pad(num, size) {
@@ -45,6 +46,13 @@ async function generateQuotation(orderId) {
   const tax_amount = Number((subtotal * gst_rate).toFixed(2));
   const grand_total = Number((subtotal + tax_amount).toFixed(2));
 
+  const buyerPortalUrl = (process.env.BUYER_PORTAL_URL || 'http://localhost:3002').replace(/\/+$/, '');
+
+  const confirmToken = crypto.randomBytes(32).toString('hex');
+  const rejectToken = crypto.randomBytes(32).toString('hex');
+  const confirmUrl = `${buyerPortalUrl}/confirm?token=${confirmToken}`;
+  const rejectUrl = `${buyerPortalUrl}/confirm?token=${rejectToken}`;
+
   const quotation = {
     quotation_number,
     factory_name: process.env.FACTORY_NAME || null,
@@ -60,16 +68,45 @@ async function generateQuotation(orderId) {
     grand_total,
     payment_terms: process.env.PAYMENT_TERMS || '50% advance, 50% on delivery',
     notes: 'Prices valid for 7 days. Subject to material availability.',
+    confirm_url: confirmUrl,
+    reject_url: rejectUrl,
   };
 
-  const insertRes = await pool.query(
-    `INSERT INTO quotations (order_id, quotation_number, data, sent_at)
-     VALUES ($1, $2, $3, $4)
-     RETURNING *`,
-    [orderId, quotation_number, quotation, null]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  return insertRes.rows[0];
+    const insertRes = await client.query(
+      `INSERT INTO quotations (order_id, quotation_number, data, sent_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [orderId, quotation_number, quotation, null]
+    );
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await client.query(
+      `INSERT INTO confirmation_tokens (order_id, token, action, expires_at) VALUES ($1::uuid, $2, 'confirm', $3)`,
+      [orderId, confirmToken, expiresAt]
+    );
+    await client.query(
+      `INSERT INTO confirmation_tokens (order_id, token, action, expires_at) VALUES ($1::uuid, $2, 'reject', $3)`,
+      [orderId, rejectToken, expiresAt]
+    );
+
+    await client.query('COMMIT');
+
+    const result = insertRes.rows[0];
+    return {
+      ...result,
+      confirm_url: confirmUrl,
+      reject_url: rejectUrl,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function getLastQuotation(orderId) {

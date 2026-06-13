@@ -1,5 +1,7 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config();
+require('dotenv').config({ override: true });
+const Groq = require('groq-sdk');
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const SYSTEM_PROMPT = `You are an order extraction assistant for a garment manufacturing factory.
 Your job is to read a raw buyer message (email or WhatsApp) and extract structured order information.
@@ -12,6 +14,10 @@ RULES:
 - Multiple garment types → separate objects in items array.
 - garment_type: short lowercase e.g. "formal shirt", "kurta", "t-shirt".
 - If not an order at all (greeting, complaint, payment follow-up), set is_order: false.
+- MULTI-ITEM: If buyer mentions multiple garment types separated by "and", "also", "plus", comma, or numbered list → create separate item objects for each.
+- Each item must have its own quantity, fabric_type, colour, size_breakdown.
+- If a field applies to all items (e.g. "all in cotton"), apply it to each item.
+- Example: "Need 200 blue cotton shirts (M:100 L:100) and 300 black polyester trousers (32:150 34:150)" → items.length === 2.
 
 Respond ONLY with valid JSON. No preamble, no explanation, no markdown fences.
 
@@ -49,80 +55,51 @@ const FOLLOWUP_QUESTIONS = {
   size_breakdown: 'Could you share the size-wise quantity split? (e.g. S:100, M:200, L:150)',
 };
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-function buildFollowupQuestions(missingFields) {
-  const questions = [];
-  const seen = new Set();
-
-  for (const rawField of missingFields) {
-    const field = String(rawField);
-    const key = Object.keys(FOLLOWUP_QUESTIONS).find((candidate) => field.includes(candidate));
-
-    if (key && !seen.has(key)) {
-      seen.add(key);
-      questions.push(FOLLOWUP_QUESTIONS[key]);
-    }
-  }
-
-  return questions;
-}
-
-function logParsedResult(parsed) {
-  const buyerName = parsed.buyer_name || 'unknown';
-  const confidence = parsed.confidence || 'unknown';
-  const missingFields = Array.isArray(parsed.missing_fields) && parsed.missing_fields.length > 0
-    ? parsed.missing_fields.join(',')
-    : 'none';
-
-  console.log(`[INTAKE] ${buyerName} | confidence: ${confidence} | missing: ${missingFields}`);
-}
-
 async function parseOrderMessage(rawMessage) {
   const today = new Date().toISOString().split('T')[0];
   const systemPrompt = SYSTEM_PROMPT.replace('{{TODAY}}', today);
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      systemInstruction: systemPrompt,
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: rawMessage }
+      ],
+      temperature: 0.1,
+      max_tokens: 1000,
     });
 
-    const result = await model.generateContent(rawMessage);
-    const text = result.response.text().trim();
+    const text = response.choices[0].message.content.trim();
 
     let parsed;
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch (e) {
-      throw new Error('Gemini returned invalid JSON: ' + text);
+      console.error('[INTAKE] Failed to parse JSON from LLM:', text);
+      return { is_order: false, error: 'api_error' };
     }
 
     if (!parsed.is_order) {
-      logParsedResult(parsed);
+      console.log('[INTAKE] Not an order message');
       return { is_order: false };
     }
 
-    const missingFields = Array.isArray(parsed.missing_fields) ? parsed.missing_fields : [];
-    const enriched = {
-      ...parsed,
-      missing_fields: missingFields,
-    };
-
-    if (missingFields.length > 0) {
-      enriched.needs_followup = true;
-      enriched.followup_questions = buildFollowupQuestions(missingFields);
+    if (parsed.missing_fields && parsed.missing_fields.length > 0) {
+      parsed.needs_followup = true;
+      parsed.followup_questions = parsed.missing_fields
+        .map(f => FOLLOWUP_QUESTIONS[f])
+        .filter(Boolean);
     }
 
-    logParsedResult(enriched);
-    return enriched;
-  } catch (err) {
-    console.error('[INTAKE] unknown | confidence: unknown | missing: api_error', err.message);
+    console.log(`[INTAKE] ${parsed.buyer_name || 'unknown'} | confidence: ${parsed.confidence} | missing: ${parsed.missing_fields?.join(', ') || 'none'}`);
+
+    return parsed;
+
+  } catch (e) {
+    console.error('[INTAKE] Groq API error:', e.message);
     return { is_order: false, error: 'api_error' };
   }
 }
 
-module.exports = {
-  parseOrderMessage,
-  SYSTEM_PROMPT,
-};
+module.exports = { parseOrderMessage };

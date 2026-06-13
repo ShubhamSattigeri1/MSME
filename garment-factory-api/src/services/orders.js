@@ -122,6 +122,11 @@ async function listOrders(filters = {}) {
     clauses.push(`created_at >= $${values.length}`);
   }
 
+  if (filters.source) {
+    values.push(filters.source);
+    clauses.push(`source = $${values.length}`);
+  }
+
   const whereClause = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const result = await pool.query(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`, values);
   return result.rows;
@@ -151,7 +156,57 @@ async function updateOrderStatus(id, status) {
     [status, id]
   );
 
-  return result.rows[0] || null;
+  const order = result.rows[0] || null;
+  if (!order) return null;
+
+  // Attach items for downstream services
+  const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id]);
+  order.items = itemsRes.rows;
+
+  try {
+    if (status === 'confirmed') {
+      // Auto-schedule production
+      const productionScheduler = require('./productionScheduler');
+      const schedule = await productionScheduler.scheduleOrder(id);
+
+      // Send quotation email if quotation exists
+      const quotationRes = await pool.query(
+        'SELECT * FROM quotations WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [id]
+      );
+      if (quotationRes.rowCount > 0) {
+        const notifier = require('./notifier');
+        await notifier.sendQuotationReady(order, quotationRes.rows[0]);
+      }
+
+      return { ...order, schedule, warning: schedule.deadline_feasible ? null : `Order cannot meet deadline. Expected: ${schedule.expected_completion}, Deadline: ${order.delivery_deadline}` };
+    }
+
+    if (status === 'in_production') {
+      // Update production schedule
+      await pool.query(
+        `UPDATE production_schedule SET current_stage = 'cutting', start_date = CURRENT_DATE, updated_at = NOW()
+         WHERE order_id = $1 AND current_stage = 'queued'`,
+        [id]
+      );
+
+      const notifier = require('./notifier');
+      const scheduleRes = await pool.query(
+        'SELECT * FROM production_schedule WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1',
+        [id]
+      );
+      await notifier.sendProductionStarted(order, scheduleRes.rows[0] || {});
+    }
+
+    if (status === 'shipped') {
+      const notifier = require('./notifier');
+      await notifier.sendOrderShipped(order);
+    }
+  } catch (e) {
+    console.error('[NOTIFY] Error in status change side effects:', e.message);
+  }
+
+  return order;
 }
 
 module.exports = {

@@ -29,12 +29,33 @@ async function calculateOrderPrice(orderId, overrides = {}) {
   if (!settings) throw new Error('Pricing settings not found');
 
   const wastage_pct = Number((overrides.wastage_pct !== undefined ? overrides.wastage_pct : settings.default_wastage_pct));
-  const margin_pct = Number((overrides.margin_pct !== undefined ? overrides.margin_pct : settings.default_margin_pct));
   const labour_cost_per_min = Number((overrides.labour_cost_per_min !== undefined ? overrides.labour_cost_per_min : settings.labour_cost_per_min));
   const overhead_per_unit = Number((overrides.overhead_per_unit !== undefined ? overrides.overhead_per_unit : settings.overhead_per_unit));
+  const minimum_margin_pct = Number(settings.minimum_margin_pct || 0.05);
 
   const orderResult = await client.query('SELECT * FROM orders WHERE id = $1', [orderId]);
   if (orderResult.rowCount === 0) throw new Error('Order not found');
+  const order = orderResult.rows[0];
+
+  // Margin priority: 1) overrides.margin_pct, 2) order.negotiated_margin_pct, 3) settings.default_margin_pct
+  let rawMargin;
+  if (overrides.margin_pct !== undefined) {
+    rawMargin = Number(overrides.margin_pct);
+  } else if (order.negotiated_margin_pct !== null && order.negotiated_margin_pct !== undefined) {
+    rawMargin = Number(order.negotiated_margin_pct);
+  } else {
+    rawMargin = Number(settings.default_margin_pct);
+  }
+
+  // Per-item margin overrides: { [order_item_id]: margin_pct }
+  const itemMargins = overrides.item_margins || {};
+
+  // Enforce floor
+  const margin_pct = Math.max(rawMargin, minimum_margin_pct);
+  let warning = null;
+  if (rawMargin < minimum_margin_pct) {
+    warning = `Margin floored at minimum: ${(minimum_margin_pct * 100).toFixed(1)}%`;
+  }
 
   const itemsResult = await client.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [orderId]);
   if (itemsResult.rowCount === 0) throw new Error('Order has no items to price');
@@ -69,7 +90,14 @@ async function calculateOrderPrice(orderId, overrides = {}) {
     const labour_cost = minutes_per_garment * labour_cost_per_min * Number(item.quantity);
     const overhead_cost = overhead_per_unit * Number(item.quantity);
     const subtotal = material_cost + wastage_cost + labour_cost + overhead_cost;
-    const margin_amount = subtotal * margin_pct;
+
+    // Per-item margin override, fallback to order-level margin
+    const itemRawMargin = itemMargins[item.id] !== undefined
+      ? Number(itemMargins[item.id])
+      : rawMargin;
+    const itemMargin = Math.max(itemRawMargin, minimum_margin_pct);
+
+    const margin_amount = subtotal * itemMargin;
     const item_total = subtotal + margin_amount;
     const unit_price = item_total / Number(item.quantity);
 
@@ -82,6 +110,9 @@ async function calculateOrderPrice(orderId, overrides = {}) {
     const item_total_r = Number(item_total.toFixed(2));
     const unit_price_r = Number(unit_price.toFixed(2));
 
+    // Persist unit_price to order_items table
+    await client.query('UPDATE order_items SET unit_price = $1 WHERE id = $2', [unit_price_r, item.id]);
+
     itemsOut.push({
       order_item_id: item.id,
       garment_type: item.garment_type,
@@ -90,6 +121,7 @@ async function calculateOrderPrice(orderId, overrides = {}) {
       wastage_cost: wastage_cost_r,
       labour_cost: labour_cost_r,
       overhead_cost: overhead_cost_r,
+      margin_pct: itemMargin,
       margin_amount: margin_amount_r,
       item_total: item_total_r,
       unit_price: unit_price_r,
@@ -103,10 +135,11 @@ async function calculateOrderPrice(orderId, overrides = {}) {
   // update orders.total_price in DB (use client if provided)
   await client.query('UPDATE orders SET total_price = $1, updated_at = NOW() WHERE id = $2', [order_total_r, orderId]);
 
-  return {
+  const result = {
     order_id: orderId,
     items: itemsOut,
     order_total: order_total_r,
+    effective_margin_pct: margin_pct,
     parameters_used: {
       wastage_pct,
       margin_pct,
@@ -115,6 +148,10 @@ async function calculateOrderPrice(orderId, overrides = {}) {
     },
     calculated_at: new Date().toISOString(),
   };
+
+  if (warning) result.warning = warning;
+
+  return result;
 }
 
 module.exports = {

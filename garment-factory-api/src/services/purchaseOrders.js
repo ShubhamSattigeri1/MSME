@@ -59,7 +59,7 @@ async function updatePurchaseOrderStatus(id, status) {
   try {
     await client.query('BEGIN');
 
-    const poResult = await client.query('SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE', [id]);
+    const poResult = await client.query('SELECT * FROM purchase_orders WHERE id = $1::uuid FOR UPDATE', [id]);
     if (poResult.rowCount === 0) {
       await client.query('ROLLBACK');
       return null;
@@ -72,9 +72,9 @@ async function updatePurchaseOrderStatus(id, status) {
 
     const updateResult = await client.query(
       `UPDATE purchase_orders
-       SET status = $1,
+       SET status = $1::text,
            received_at = CASE WHEN $1 = 'received' THEN NOW() ELSE received_at END
-       WHERE id = $2
+       WHERE id = $2::uuid
        RETURNING *`,
       [status, id]
     );
@@ -84,7 +84,7 @@ async function updatePurchaseOrderStatus(id, status) {
         `UPDATE materials
          SET qty_available = qty_available + $1,
              updated_at = NOW()
-         WHERE id = $2`,
+         WHERE id = $2::uuid`,
         [purchaseOrder.qty_ordered, purchaseOrder.material_id]
       );
     }

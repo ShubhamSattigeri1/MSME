@@ -1,7 +1,9 @@
 const express = require('express');
+const pool = require('../db');
 const { parseOrderMessage } = require('../services/orderParser');
 const { createOrder } = require('../services/orders');
 const { checkAvailability } = require('../services/materials');
+const { suggestDeadline } = require('../services/deadlineEngine');
 const {
   createPendingReview,
   dismissPendingReview,
@@ -129,10 +131,32 @@ router.post('/order', async (req, res, next) => {
     const order = await createOrder(toOrderPayload(parsed));
     const availabilityResult = await checkAvailability(order.items);
 
+    let deadlineSuggestion = null;
+    try {
+      deadlineSuggestion = await suggestDeadline({ items: order.items });
+      if (deadlineSuggestion && deadlineSuggestion.suggested_deadline) {
+        await pool.query(
+          `UPDATE orders SET suggested_deadline = $1, deadline_suggestion_factors = $2::jsonb WHERE id = $3::uuid`,
+          [deadlineSuggestion.suggested_deadline, JSON.stringify(deadlineSuggestion.breakdown || {}), order.id]
+        );
+      }
+    } catch (e) {
+      console.error('[DEADLINE] Failed to suggest deadline:', e.message);
+    }
+
+    try {
+      const notifier = require('../services/notifier');
+      await notifier.sendOrderReceived(order);
+    } catch (e) {
+      console.error('[NOTIFY] Failed to send order received notification:', e.message);
+    }
+
     return success(res, {
       received: true,
       order_id: order.id,
       availability_result: availabilityResult,
+      suggested_deadline: deadlineSuggestion?.suggested_deadline || null,
+      deadline_breakdown: deadlineSuggestion?.breakdown || null,
     });
   } catch (err) {
     return next(err);
