@@ -102,4 +102,4 @@ async function parseOrderMessage(rawMessage) {
   }
 }
 
-module.exports = { parseOrderMessage };
+module.exports = { parseOrderMessage, FOLLOWUP_QUESTIONS };

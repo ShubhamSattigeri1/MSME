@@ -1,7 +1,6 @@
 const pool = require('../db');
 const { assertUuid } = require('../utils/validation');
 
-// minutes per garment lookup — keep here for easy editing
 const MINUTES_PER_GARMENT = {
   default: 15,
   'formal shirt': 22,
@@ -11,21 +10,19 @@ const MINUTES_PER_GARMENT = {
   'kids frock': 12,
 };
 
-async function getPricingSettings() {
-  const res = await pool.query('SELECT * FROM pricing_settings ORDER BY updated_at DESC LIMIT 1');
+async function getPricingSettings(factoryId) {
+  const res = await pool.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]);
   return res.rows[0] || null;
 }
 
-/**
- * calculateOrderPrice(orderId, overrides = {})
- * overrides may include: wastage_pct, margin_pct, labour_cost_per_min, overhead_per_unit, minutes_per_garment, dbClient
- */
 async function calculateOrderPrice(orderId, overrides = {}) {
   assertUuid(orderId, 'orderId');
 
   const client = overrides.dbClient || pool;
+  const factoryId = overrides.factoryId;
+  if (!factoryId) throw new Error('factoryId is required');
 
-  const settings = await (overrides.dbClient ? client.query('SELECT * FROM pricing_settings ORDER BY updated_at DESC LIMIT 1').then(r => r.rows[0]) : getPricingSettings());
+  const settings = await (overrides.dbClient ? client.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]).then(r => r.rows[0]) : getPricingSettings(factoryId));
   if (!settings) throw new Error('Pricing settings not found');
 
   const wastage_pct = Number((overrides.wastage_pct !== undefined ? overrides.wastage_pct : settings.default_wastage_pct));
@@ -33,11 +30,10 @@ async function calculateOrderPrice(orderId, overrides = {}) {
   const overhead_per_unit = Number((overrides.overhead_per_unit !== undefined ? overrides.overhead_per_unit : settings.overhead_per_unit));
   const minimum_margin_pct = Number(settings.minimum_margin_pct || 0.05);
 
-  const orderResult = await client.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+  const orderResult = await client.query('SELECT * FROM orders WHERE id = $1 AND factory_id = $2', [orderId, factoryId]);
   if (orderResult.rowCount === 0) throw new Error('Order not found');
   const order = orderResult.rows[0];
 
-  // Margin priority: 1) overrides.margin_pct, 2) order.negotiated_margin_pct, 3) settings.default_margin_pct
   let rawMargin;
   if (overrides.margin_pct !== undefined) {
     rawMargin = Number(overrides.margin_pct);
@@ -47,36 +43,52 @@ async function calculateOrderPrice(orderId, overrides = {}) {
     rawMargin = Number(settings.default_margin_pct);
   }
 
-  // Per-item margin overrides: { [order_item_id]: margin_pct }
   const itemMargins = overrides.item_margins || {};
-
-  // Enforce floor
   const margin_pct = Math.max(rawMargin, minimum_margin_pct);
   let warning = null;
   if (rawMargin < minimum_margin_pct) {
     warning = `Margin floored at minimum: ${(minimum_margin_pct * 100).toFixed(1)}%`;
   }
 
-  const itemsResult = await client.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [orderId]);
+  const itemsResult = await client.query('SELECT * FROM order_items WHERE order_id = $1 AND factory_id = $2 ORDER BY id', [orderId, factoryId]);
   if (itemsResult.rowCount === 0) throw new Error('Order has no items to price');
+
+  // Per-request cache for garment pricing configs (avoids N+1 for same garment_type)
+  const garmentConfigCache = new Map();
 
   const itemsOut = [];
   let order_total = 0;
 
   for (const item of itemsResult.rows) {
+    // Look up garment-specific pricing config (cached per request)
+    const cacheKey = `${factoryId}::${item.garment_type}`;
+    if (!garmentConfigCache.has(cacheKey)) {
+      const configRes = await client.query(
+        'SELECT * FROM garment_pricing_config WHERE factory_id = $1 AND garment_type = $2',
+        [factoryId, item.garment_type]
+      );
+      garmentConfigCache.set(cacheKey, configRes.rows[0] || null);
+    }
+    const garmentConfig = garmentConfigCache.get(cacheKey);
+
+    // Per-item effective values: garment config overrides global settings
+    const itemWastagePct = garmentConfig?.wastage_pct != null ? Number(garmentConfig.wastage_pct) : wastage_pct;
+    const itemLabourCostPerMin = garmentConfig?.labour_cost_per_min != null ? Number(garmentConfig.labour_cost_per_min) : labour_cost_per_min;
+    const itemOverheadPerUnit = garmentConfig?.overhead_per_unit != null ? Number(garmentConfig.overhead_per_unit) : overhead_per_unit;
+    const itemMinimumMarginPct = garmentConfig?.minimum_margin_pct != null ? Number(garmentConfig.minimum_margin_pct) : minimum_margin_pct;
+
     const bomResult = await client.query(
       `SELECT b.qty_per_unit, m.unit_cost
        FROM bom b
        JOIN materials m ON m.id = b.material_id
-       WHERE b.garment_type = $1`,
-      [item.garment_type]
+       WHERE b.garment_type = $1 AND b.factory_id = $2 AND m.factory_id = $2`,
+      [item.garment_type, factoryId]
     );
 
     if (bomResult.rowCount === 0) {
       throw new Error(`No BOM entries for garment type: ${item.garment_type}`);
     }
 
-    // material_cost is total for this order item (qty_per_unit * item.quantity * unit_cost)
     let material_cost = 0;
     for (const row of bomResult.rows) {
       material_cost += Number(row.qty_per_unit) * Number(item.quantity) * Number(row.unit_cost);
@@ -86,22 +98,22 @@ async function calculateOrderPrice(orderId, overrides = {}) {
       ? Number(overrides.minutes_per_garment)
       : (MINUTES_PER_GARMENT[item.garment_type?.toLowerCase?.()] || MINUTES_PER_GARMENT.default);
 
-    const wastage_cost = material_cost * wastage_pct;
-    const labour_cost = minutes_per_garment * labour_cost_per_min * Number(item.quantity);
-    const overhead_cost = overhead_per_unit * Number(item.quantity);
+    const wastage_cost = material_cost * itemWastagePct;
+    const labour_cost = minutes_per_garment * itemLabourCostPerMin * Number(item.quantity);
+    const overhead_cost = itemOverheadPerUnit * Number(item.quantity);
     const subtotal = material_cost + wastage_cost + labour_cost + overhead_cost;
 
-    // Per-item margin override, fallback to order-level margin
+    // Per-item margin: item margin override → garment config → order-level
+    const itemDefaultMargin = garmentConfig?.margin_pct != null ? Number(garmentConfig.margin_pct) : rawMargin;
     const itemRawMargin = itemMargins[item.id] !== undefined
       ? Number(itemMargins[item.id])
-      : rawMargin;
-    const itemMargin = Math.max(itemRawMargin, minimum_margin_pct);
+      : itemDefaultMargin;
+    const itemMargin = Math.max(itemRawMargin, itemMinimumMarginPct);
 
     const margin_amount = subtotal * itemMargin;
     const item_total = subtotal + margin_amount;
     const unit_price = item_total / Number(item.quantity);
 
-    // round values to 2 decimals before storing
     const material_cost_r = Number(material_cost.toFixed(2));
     const wastage_cost_r = Number(wastage_cost.toFixed(2));
     const labour_cost_r = Number(labour_cost.toFixed(2));
@@ -110,8 +122,7 @@ async function calculateOrderPrice(orderId, overrides = {}) {
     const item_total_r = Number(item_total.toFixed(2));
     const unit_price_r = Number(unit_price.toFixed(2));
 
-    // Persist unit_price to order_items table
-    await client.query('UPDATE order_items SET unit_price = $1 WHERE id = $2', [unit_price_r, item.id]);
+    await client.query('UPDATE order_items SET unit_price = $1 WHERE id = $2 AND factory_id = $3', [unit_price_r, item.id, factoryId]);
 
     itemsOut.push({
       order_item_id: item.id,
@@ -125,6 +136,7 @@ async function calculateOrderPrice(orderId, overrides = {}) {
       margin_amount: margin_amount_r,
       item_total: item_total_r,
       unit_price: unit_price_r,
+      garment_config_used: garmentConfig ? true : false,
     });
 
     order_total += item_total_r;
@@ -132,8 +144,7 @@ async function calculateOrderPrice(orderId, overrides = {}) {
 
   const order_total_r = Number(order_total.toFixed(2));
 
-  // update orders.total_price in DB (use client if provided)
-  await client.query('UPDATE orders SET total_price = $1, updated_at = NOW() WHERE id = $2', [order_total_r, orderId]);
+  await client.query('UPDATE orders SET total_price = $1, updated_at = NOW() WHERE id = $2 AND factory_id = $3', [order_total_r, orderId, factoryId]);
 
   const result = {
     order_id: orderId,

@@ -3,8 +3,14 @@ const { assertNonNegativeNumber, assertPositiveNumber, assertUuid } = require('.
 
 const DEFAULT_LABOUR_MINUTES_PER_UNIT = 12;
 
-async function getPricingSettings() {
-  const result = await pool.query('SELECT * FROM pricing_settings ORDER BY updated_at DESC LIMIT 1');
+async function getPricingSettings(factoryId) {
+  const values = [];
+  let where = '';
+  if (factoryId) {
+    values.push(factoryId);
+    where = 'WHERE factory_id = $1';
+  }
+  const result = await pool.query(`SELECT * FROM pricing_settings ${where} ORDER BY updated_at DESC LIMIT 1`, values);
   return result.rows[0] || null;
 }
 
@@ -29,15 +35,17 @@ async function updatePricingSettings(payload) {
     if (Number(minimumMargin) < 0 || Number(minimumMargin) > 0.5) throw new Error('minimum_margin_pct must be between 0 and 0.5');
   }
 
-  const current = await getPricingSettings();
+  const current = await getPricingSettings(payload.factory_id);
 
   if (!current) {
+    if (!payload.factory_id) throw new Error('factory_id is required');
     const insertResult = await pool.query(
       `INSERT INTO pricing_settings
-         (labour_cost_per_min, overhead_per_unit, default_wastage_pct, default_margin_pct, minimum_margin_pct)
-       VALUES ($1, $2, $3, $4, $5)
+         (factory_id, labour_cost_per_min, overhead_per_unit, default_wastage_pct, default_margin_pct, minimum_margin_pct)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
+        payload.factory_id,
         labour,
         overhead,
         wastage,

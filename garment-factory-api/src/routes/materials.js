@@ -14,7 +14,7 @@ function success(res, data, status = 200) {
 
 router.get('/', async (req, res, next) => {
   try {
-    return success(res, await listMaterials(req.query));
+    return success(res, await listMaterials({ ...req.query, factory_id: req.factoryId }));
   } catch (err) {
     return next(err);
   }
@@ -44,7 +44,7 @@ router.put('/:id', async (req, res, next) => {
 
 router.post('/availability', async (req, res, next) => {
   try {
-    return success(res, await checkAvailability(req.body.items));
+    return success(res, await checkAvailability(req.body.items, req.factoryId));
   } catch (err) {
     return next(err);
   }

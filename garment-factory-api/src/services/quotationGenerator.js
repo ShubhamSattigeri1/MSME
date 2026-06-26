@@ -8,11 +8,11 @@ function pad(num, size) {
   return s;
 }
 
-async function generateQuotation(orderId) {
+async function generateQuotation(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
 
-  const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
-  if (orderRes.rowCount === 0) throw new Error('Order not found');
+  const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1 AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1', factoryId ? [orderId, factoryId] : [orderId]);
+  if (orderRes.rowCount === 0) throw new Error('Order not found or access denied');
   const order = orderRes.rows[0];
 
   const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [orderId]);
@@ -109,9 +109,14 @@ async function generateQuotation(orderId) {
   }
 }
 
-async function getLastQuotation(orderId) {
+async function getLastQuotation(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
-  const res = await pool.query('SELECT * FROM quotations WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1', [orderId]);
+  const res = await pool.query(
+    factoryId 
+      ? 'SELECT q.* FROM quotations q JOIN orders o ON o.id = q.order_id WHERE q.order_id = $1 AND o.factory_id = $2 ORDER BY q.created_at DESC LIMIT 1'
+      : 'SELECT * FROM quotations WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1',
+    factoryId ? [orderId, factoryId] : [orderId]
+  );
   return res.rows[0] || null;
 }
 

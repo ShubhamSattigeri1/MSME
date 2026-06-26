@@ -3,8 +3,8 @@ const { assertUuid } = require('../utils/validation');
 
 async function createPendingReview(payload) {
   const result = await pool.query(
-    `INSERT INTO pending_review (raw_message, source, sender_id, parsed_result, reason)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO pending_review (raw_message, source, sender_id, parsed_result, reason, factory_id, missing_fields, followup_needed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       payload.raw_message,
@@ -12,6 +12,9 @@ async function createPendingReview(payload) {
       payload.sender_id || null,
       payload.parsed_result ? JSON.stringify(payload.parsed_result) : null,
       payload.reason,
+      payload.factory_id || null,
+      payload.missing_fields && payload.missing_fields.length > 0 ? payload.missing_fields : null,
+      payload.followup_needed === true ? true : false,
     ]
   );
 
@@ -24,6 +27,20 @@ async function listUnreviewed() {
      FROM pending_review
      WHERE reviewed = false
      ORDER BY created_at DESC`
+  );
+
+  return result.rows;
+}
+
+async function listPendingByFactory(factoryId) {
+  assertUuid(factoryId, 'factoryId');
+
+  const result = await pool.query(
+    `SELECT *
+     FROM pending_review
+     WHERE factory_id = $1 AND reviewed = false
+     ORDER BY created_at DESC`,
+    [factoryId]
   );
 
   return result.rows;
@@ -68,6 +85,7 @@ module.exports = {
   createPendingReview,
   getPendingReviewById,
   listUnreviewed,
+  listPendingByFactory,
   markReviewed,
   dismissPendingReview,
 };

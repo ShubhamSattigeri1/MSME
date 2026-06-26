@@ -5,11 +5,19 @@ const { resolveTemplate } = require('../config/messageTemplates');
 async function sendMessage(orderId, senderType, body, options = {}) {
   assertUuid(orderId, 'orderId');
 
-  const { templateKey, senderId } = options;
+  const { templateKey, senderId, factoryId } = options;
   let messageBody = body;
 
+  if (factoryId) {
+    // Verify order belongs to factory when factoryId provided
+    const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1 AND factory_id = $2', [orderId, factoryId]);
+    if (orderRes.rowCount === 0) {
+      throw new Error('Order not found or access denied');
+    }
+  }
+
   if (templateKey && templateKey !== 'custom') {
-    const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+    const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1 AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1', factoryId ? [orderId, factoryId] : [orderId]);
     const order = orderRes.rows[0] || {};
     const items = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [orderId]);
     const totalQty = items.rows.reduce((s, i) => s + Number(i.quantity || 0), 0);
@@ -48,7 +56,7 @@ async function sendMessage(orderId, senderType, body, options = {}) {
   // If owner sent a message and order has buyer email, also try email
   if (senderType === 'owner') {
     try {
-      const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+      const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1 AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1', factoryId ? [orderId, factoryId] : [orderId]);
       const order = orderRes.rows[0];
       const contact = order?.buyer_contact;
       if (contact && contact.includes('@')) {
@@ -81,30 +89,52 @@ async function sendMessage(orderId, senderType, body, options = {}) {
   return message;
 }
 
-async function getMessages(orderId) {
+async function getMessages(orderId, factoryId = null) {
   assertUuid(orderId, 'orderId');
-  const result = await pool.query(
-    'SELECT * FROM messages WHERE order_id = $1::uuid ORDER BY created_at ASC',
-    [orderId]
-  );
+  
+  let query = 'SELECT * FROM messages WHERE order_id = $1::uuid';
+  const values = [orderId];
+  
+  if (factoryId) {
+    query += ' AND EXISTS (SELECT 1 FROM orders WHERE id = messages.order_id AND factory_id = $2)';
+    values.push(factoryId);
+  }
+  
+  query += ' ORDER BY created_at ASC';
+  
+  const result = await pool.query(query, values);
   return result.rows;
 }
 
-async function markMessagesRead(orderId, readerType) {
+async function markMessagesRead(orderId, readerType, factoryId = null) {
   assertUuid(orderId, 'orderId');
-  const result = await pool.query(
-    `UPDATE messages SET read_at = NOW() WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL RETURNING id`,
-    [orderId, readerType]
-  );
+  
+  let query = `UPDATE messages SET read_at = NOW() WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL`;
+  const values = [orderId, readerType];
+  
+  if (factoryId) {
+    query += ` AND EXISTS (SELECT 1 FROM orders WHERE id = messages.order_id AND factory_id = $3)`;
+    values.push(factoryId);
+  }
+  
+  query += ` RETURNING id`;
+  
+  const result = await pool.query(query, values);
   return result.rowCount;
 }
 
-async function getUnreadCount(orderId, readerType) {
+async function getUnreadCount(orderId, readerType, factoryId = null) {
   assertUuid(orderId, 'orderId');
-  const result = await pool.query(
-    'SELECT COUNT(*) FROM messages WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL',
-    [orderId, readerType]
-  );
+  
+  let query = `SELECT COUNT(*) FROM messages WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL`;
+  const values = [orderId, readerType];
+  
+  if (factoryId) {
+    query += ` AND EXISTS (SELECT 1 FROM orders WHERE id = messages.order_id AND factory_id = $3)`;
+    values.push(factoryId);
+  }
+  
+  const result = await pool.query(query, values);
   return parseInt(result.rows[0].count, 10);
 }
 

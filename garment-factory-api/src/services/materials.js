@@ -2,26 +2,36 @@ const pool = require('../db');
 const { assertNonNegativeNumber, assertPositiveNumber, assertRequired, assertUuid } = require('../utils/validation');
 
 async function listMaterials(filters = {}) {
-  const result = await pool.query(
-    `SELECT *
-     FROM materials
-     ${filters.low_stock ? 'WHERE qty_available < reorder_threshold' : ''}
-     ORDER BY name`
-  );
+  const values = [];
+  const conditions = [];
+
+  if (filters.factory_id) {
+    values.push(filters.factory_id);
+    conditions.push(`factory_id = $${values.length}`);
+  }
+
+  if (filters.low_stock) {
+    conditions.push('qty_available < reorder_threshold');
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query(`SELECT * FROM materials ${where} ORDER BY name`, values);
   return result.rows;
 }
 
 async function addMaterial(payload) {
+  assertRequired(payload.factory_id, 'factory_id');
   assertRequired(payload.name, 'name');
   assertRequired(payload.unit, 'unit');
   assertNonNegativeNumber(payload.unit_cost, 'unit_cost');
 
   const result = await pool.query(
     `INSERT INTO materials
-       (name, category, unit, qty_available, unit_cost, supplier_name, reorder_threshold)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (factory_id, name, category, unit, qty_available, unit_cost, supplier_name, reorder_threshold)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
+      payload.factory_id,
       payload.name,
       payload.category || null,
       payload.unit,
@@ -76,7 +86,7 @@ async function updateMaterial(id, updates) {
   return result.rows[0] || null;
 }
 
-async function checkAvailability(items) {
+async function checkAvailability(items, factoryId) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error('items must contain at least one item');
   }
@@ -96,8 +106,8 @@ async function checkAvailability(items) {
          m.unit
        FROM bom b
        JOIN materials m ON m.id = b.material_id
-       WHERE b.garment_type = $1`,
-      [item.garment_type]
+       WHERE b.garment_type = $1 AND b.factory_id = $2`,
+      [item.garment_type, factoryId]
     );
 
     for (const row of bomResult.rows) {

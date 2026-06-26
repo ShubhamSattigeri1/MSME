@@ -3,12 +3,19 @@ const { assertPositiveNumber, assertRequired, assertUuid } = require('../utils/v
 
 async function listBom(filters = {}) {
   const values = [];
-  let whereClause = '';
+  const conditions = [];
+
+  if (filters.factory_id) {
+    values.push(filters.factory_id);
+    conditions.push(`b.factory_id = $${values.length}`);
+  }
 
   if (filters.garment_type) {
     values.push(filters.garment_type);
-    whereClause = 'WHERE b.garment_type = $1';
+    conditions.push(`b.garment_type = $${values.length}`);
   }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const result = await pool.query(
     `SELECT
@@ -18,7 +25,7 @@ async function listBom(filters = {}) {
        m.unit AS material_unit
      FROM bom b
      JOIN materials m ON m.id = b.material_id
-     ${whereClause}
+     ${where}
      ORDER BY b.garment_type, m.name`,
     values
   );
@@ -27,6 +34,7 @@ async function listBom(filters = {}) {
 }
 
 async function addBomEntry(payload) {
+  assertRequired(payload.factory_id, 'factory_id');
   assertRequired(payload.garment_type, 'garment_type');
   assertUuid(payload.material_id, 'material_id');
   assertPositiveNumber(payload.qty_per_unit, 'qty_per_unit');
@@ -37,10 +45,10 @@ async function addBomEntry(payload) {
   }
 
   const result = await pool.query(
-    `INSERT INTO bom (garment_type, material_id, qty_per_unit, notes)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO bom (factory_id, garment_type, material_id, qty_per_unit, notes)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [payload.garment_type, payload.material_id, payload.qty_per_unit, payload.notes || null]
+    [payload.factory_id, payload.garment_type, payload.material_id, payload.qty_per_unit, payload.notes || null]
   );
 
   return result.rows[0];

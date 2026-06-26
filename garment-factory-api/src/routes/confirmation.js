@@ -1,7 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
 const pool = require('../db');
-const buyerAuth = require('../middleware/buyerAuth');
 const { sendMessage } = require('../services/messaging');
 const { scheduleOrder } = require('../services/productionScheduler');
 const notifier = require('../services/notifier');
@@ -62,8 +61,8 @@ router.get('/:token', async (req, res, next) => {
   }
 });
 
-// POST /api/confirm/:token — buyer confirms or rejects (requires auth)
-router.post('/:token', buyerAuth, async (req, res, next) => {
+// POST /api/confirm/:token — buyer confirms or rejects (token-based auth, no portal needed)
+router.post('/:token', async (req, res, next) => {
   try {
     const { token } = req.params;
     const tokRes = await pool.query(
@@ -90,10 +89,6 @@ router.post('/:token', buyerAuth, async (req, res, next) => {
     }
 
     const order = orderRes.rows[0];
-
-    if (order.buyer_id !== req.buyer.buyer_id) {
-      return res.status(403).json({ success: false, error: 'This order does not belong to your account' });
-    }
 
     const client = await pool.connect();
     try {

@@ -15,9 +15,9 @@ function failure(res, error, status = 400) {
 // GET /api/orders/:orderId/messages
 router.get('/orders/:orderId/messages', async (req, res, next) => {
   try {
-    const messages = await getMessages(req.params.orderId);
-    await markMessagesRead(req.params.orderId, 'owner');
-    const unread = await getUnreadCount(req.params.orderId, 'owner');
+    const messages = await getMessages(req.params.orderId, req.factoryId);
+    await markMessagesRead(req.params.orderId, 'owner', req.factoryId);
+    const unread = await getUnreadCount(req.params.orderId, 'owner', req.factoryId);
     return success(res, { messages, unread_count: unread });
   } catch (err) {
     return next(err);
@@ -32,6 +32,7 @@ router.post('/orders/:orderId/messages', async (req, res, next) => {
     const message = await sendMessage(req.params.orderId, 'owner', body || '', {
       templateKey: template_key,
       senderId: 'owner',
+      factoryId: req.factoryId,
     });
     return success(res, message, 201);
   } catch (err) {

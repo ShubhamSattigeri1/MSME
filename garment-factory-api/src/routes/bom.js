@@ -14,7 +14,7 @@ function success(res, data, status = 200) {
 
 router.get('/', async (req, res, next) => {
   try {
-    return success(res, await listBom(req.query));
+    return success(res, await listBom({ ...req.query, factory_id: req.factoryId }));
   } catch (err) {
     return next(err);
   }

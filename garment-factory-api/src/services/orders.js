@@ -3,23 +3,19 @@ const insertOrder = require('../db/insertOrder');
 const { assertOneOf, assertUuid } = require('../utils/validation');
 const pricingEngine = require('./pricingEngine');
 
-// services used within transaction
-const purchaseOrdersService = require('./purchaseOrders');
-
 const ORDER_STATUSES = ['pending', 'confirmed', 'in_production', 'shipped', 'cancelled'];
 
-async function createOrder(payload) {
+async function createOrder(payload, factoryId) {
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-    const orderId = await insertOrder(client, payload);
+    // NOTE: insertOrder must be updated to accept and insert factory_id
+    const orderId = await insertOrder(client, payload, factoryId);
 
-    // fetch inserted items
     const itemsRes = await client.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [orderId]);
     const items = itemsRes.rows;
 
-    // material availability check & reservation within this transaction
     const requirements = new Map();
 
     for (const item of items) {
@@ -27,8 +23,8 @@ async function createOrder(payload) {
         `SELECT b.material_id, b.qty_per_unit, m.name AS material_name, m.qty_available, m.unit
          FROM bom b
          JOIN materials m ON m.id = b.material_id
-         WHERE b.garment_type = $1 FOR UPDATE`,
-        [item.garment_type]
+         WHERE b.garment_type = $1 AND b.factory_id = $2 AND m.factory_id = $2 FOR UPDATE`,
+        [item.garment_type, factoryId]
       );
 
       for (const row of bomRes.rows) {
@@ -60,11 +56,10 @@ async function createOrder(payload) {
           unit: req.unit,
         });
 
-        // auto-create purchase order for deficit * 1.1 buffer
         const bufferQty = Number((deficit * 1.1).toFixed(2));
         const poRes = await client.query(
-          `INSERT INTO purchase_orders (material_id, qty_ordered, status) VALUES ($1, $2, $3) RETURNING id`,
-          [req.material_id, bufferQty, 'pending']
+          `INSERT INTO purchase_orders (material_id, qty_ordered, status, factory_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+          [req.material_id, bufferQty, 'pending', factoryId]
         );
         auto_pos_raised.push(poRes.rows[0].id);
       }
@@ -76,23 +71,20 @@ async function createOrder(payload) {
       auto_pos_raised,
     };
 
-    // if sufficient, reserve materials by reducing qty_available
     if (shortfalls.length === 0) {
       for (const req of requirements.values()) {
         await client.query(
-          `UPDATE materials SET qty_available = qty_available - $1, updated_at = NOW() WHERE id = $2`,
-          [Number(req.required.toFixed(4)), req.material_id]
+          `UPDATE materials SET qty_available = qty_available - $1, updated_at = NOW() WHERE id = $2 AND factory_id = $3`,
+          [Number(req.required.toFixed(4)), req.material_id, factoryId]
         );
       }
     }
 
-    // calculate price and update orders.total_price within transaction
-    const price = await pricingEngine.calculateOrderPrice(orderId, { dbClient: client });
+    const price = await pricingEngine.calculateOrderPrice(orderId, { dbClient: client, factoryId });
 
     await client.query('COMMIT');
 
-    const order = await getOrderById(orderId);
-    // attach computed price breakdown and material status
+    const order = await getOrderById(orderId, factoryId);
     return { ...order, price_breakdown: price, material_status };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -102,9 +94,9 @@ async function createOrder(payload) {
   }
 }
 
-async function listOrders(filters = {}) {
-  const clauses = [];
-  const values = [];
+async function listOrders(filters = {}, factoryId) {
+  const clauses = ['factory_id = $1'];
+  const values = [factoryId];
 
   if (filters.status) {
     assertOneOf(filters.status, ORDER_STATUSES, 'status');
@@ -127,52 +119,49 @@ async function listOrders(filters = {}) {
     clauses.push(`source = $${values.length}`);
   }
 
-  const whereClause = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const whereClause = `WHERE ${clauses.join(' AND ')}`;
   const result = await pool.query(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`, values);
   return result.rows;
 }
 
-async function getOrderById(id) {
+async function getOrderById(id, factoryId) {
   assertUuid(id, 'id');
-  const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1', [id]);
+  const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1 AND factory_id = $2', [id, factoryId]);
 
   if (orderResult.rowCount === 0) {
     return null;
   }
 
-  const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [id]);
+  const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1 AND factory_id = $2 ORDER BY id', [id, factoryId]);
   return { ...orderResult.rows[0], items: itemsResult.rows };
 }
 
-async function updateOrderStatus(id, status) {
+async function updateOrderStatus(id, status, factoryId) {
   assertUuid(id, 'id');
   assertOneOf(status, ORDER_STATUSES, 'status');
 
   const result = await pool.query(
     `UPDATE orders
      SET status = $1, updated_at = NOW()
-     WHERE id = $2
+     WHERE id = $2 AND factory_id = $3
      RETURNING *`,
-    [status, id]
+    [status, id, factoryId]
   );
 
   const order = result.rows[0] || null;
   if (!order) return null;
 
-  // Attach items for downstream services
-  const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id]);
+  const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1 AND factory_id = $2', [id, factoryId]);
   order.items = itemsRes.rows;
 
   try {
     if (status === 'confirmed') {
-      // Auto-schedule production
       const productionScheduler = require('./productionScheduler');
-      const schedule = await productionScheduler.scheduleOrder(id);
+      const schedule = await productionScheduler.scheduleOrder(id, factoryId);
 
-      // Send quotation email if quotation exists
       const quotationRes = await pool.query(
-        'SELECT * FROM quotations WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1',
-        [id]
+        'SELECT * FROM quotations WHERE order_id = $1 AND factory_id = $2 ORDER BY created_at DESC LIMIT 1',
+        [id, factoryId]
       );
       if (quotationRes.rowCount > 0) {
         const notifier = require('./notifier');
@@ -183,17 +172,16 @@ async function updateOrderStatus(id, status) {
     }
 
     if (status === 'in_production') {
-      // Update production schedule
       await pool.query(
         `UPDATE production_schedule SET current_stage = 'cutting', start_date = CURRENT_DATE, updated_at = NOW()
-         WHERE order_id = $1 AND current_stage = 'queued'`,
-        [id]
+         WHERE order_id = $1 AND factory_id = $2 AND current_stage = 'queued'`,
+        [id, factoryId]
       );
 
       const notifier = require('./notifier');
       const scheduleRes = await pool.query(
-        'SELECT * FROM production_schedule WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1',
-        [id]
+        'SELECT * FROM production_schedule WHERE order_id = $1 AND factory_id = $2 ORDER BY updated_at DESC LIMIT 1',
+        [id, factoryId]
       );
       await notifier.sendProductionStarted(order, scheduleRes.rows[0] || {});
     }

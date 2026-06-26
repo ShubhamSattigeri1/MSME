@@ -3,7 +3,7 @@ const { assertUuid } = require('../utils/validation');
 const { calculateOrderPrice } = require('./pricingEngine');
 const { generateQuotation } = require('./quotationGenerator');
 
-async function applyNegotiatedMargin(orderId, newMarginPct, notes) {
+async function applyNegotiatedMargin(orderId, newMarginPct, notes, factoryId) {
   assertUuid(orderId, 'orderId');
 
   if (typeof newMarginPct !== 'number' || isNaN(newMarginPct)) {
@@ -24,8 +24,8 @@ async function applyNegotiatedMargin(orderId, newMarginPct, notes) {
     );
   }
 
-  const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1::uuid', [orderId]);
-  if (orderRes.rowCount === 0) throw new Error('Order not found');
+  const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1::uuid AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1::uuid', factoryId ? [orderId, factoryId] : [orderId]);
+  if (orderRes.rowCount === 0) throw new Error('Order not found or access denied');
   const order = orderRes.rows[0];
 
   const previousMargin = order.negotiated_margin_pct != null
@@ -48,12 +48,12 @@ async function applyNegotiatedMargin(orderId, newMarginPct, notes) {
        negotiation_notes = $2,
        negotiation_history = $3::jsonb,
        updated_at = NOW()
-     WHERE id = $4::uuid`,
-    [newMarginPct, notes || null, JSON.stringify(updatedHistory), orderId]
+     WHERE id = $4::uuid AND factory_id = $5`,
+    [newMarginPct, notes || null, JSON.stringify(updatedHistory), orderId, factoryId]
   );
 
   const price = await calculateOrderPrice(orderId, { margin_pct: newMarginPct });
-  const quotation = await generateQuotation(orderId);
+  const quotation = await generateQuotation(orderId, factoryId);
 
   const warning = newMarginPct < minimum_margin_pct
     ? `Margin floored at minimum: ${(minimum_margin_pct * 100).toFixed(1)}%`
@@ -69,18 +69,18 @@ async function applyNegotiatedMargin(orderId, newMarginPct, notes) {
   };
 }
 
-async function getNegotiationHistory(orderId) {
+async function getNegotiationHistory(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
-  const res = await pool.query('SELECT negotiation_history FROM orders WHERE id = $1::uuid', [orderId]);
-  if (res.rowCount === 0) throw new Error('Order not found');
+  const res = await pool.query(factoryId ? 'SELECT negotiation_history FROM orders WHERE id = $1::uuid AND factory_id = $2' : 'SELECT negotiation_history FROM orders WHERE id = $1::uuid', factoryId ? [orderId, factoryId] : [orderId]);
+  if (res.rowCount === 0) throw new Error('Order not found or access denied');
   return res.rows[0].negotiation_history || [];
 }
 
-async function resetMargin(orderId) {
+async function resetMargin(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
 
-  const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1::uuid', [orderId]);
-  if (orderRes.rowCount === 0) throw new Error('Order not found');
+  const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1::uuid AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1::uuid', factoryId ? [orderId, factoryId] : [orderId]);
+  if (orderRes.rowCount === 0) throw new Error('Order not found or access denied');
   const order = orderRes.rows[0];
 
   if (order.negotiated_margin_pct == null) {
@@ -92,12 +92,12 @@ async function resetMargin(orderId) {
        negotiated_margin_pct = NULL,
        negotiation_notes = NULL,
        updated_at = NOW()
-     WHERE id = $1::uuid`,
-    [orderId]
+     WHERE id = $1::uuid AND factory_id = $2`,
+    [orderId, factoryId]
   );
 
   const price = await calculateOrderPrice(orderId);
-  await generateQuotation(orderId);
+  await generateQuotation(orderId, factoryId);
 
   return {
     order_id: orderId,

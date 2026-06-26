@@ -1,7 +1,7 @@
 const { assertPositiveNumber, assertRequired } = require('../utils/validation');
 const { findOrCreateBuyer } = require('../services/buyers');
 
-async function insertOrder(client, parsedOrder) {
+async function insertOrder(client, parsedOrder, factoryId) {
   parsedOrder.buyer_name = parsedOrder.buyer_name || 'Unknown';
   if (!Array.isArray(parsedOrder.items) || parsedOrder.items.length === 0) {
     throw new Error('items must contain at least one order item');
@@ -13,8 +13,8 @@ async function insertOrder(client, parsedOrder) {
   }
 
   const orderResult = await client.query(
-    `INSERT INTO orders (buyer_name, buyer_contact, delivery_deadline, total_price, notes, source)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO orders (buyer_name, buyer_contact, delivery_deadline, total_price, notes, source, factory_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
       parsedOrder.buyer_name,
@@ -23,6 +23,7 @@ async function insertOrder(client, parsedOrder) {
       parsedOrder.total_price || null,
       parsedOrder.notes || parsedOrder.special_instructions || null,
       parsedOrder.source || 'manual',
+      factoryId,
     ]
   );
 
@@ -34,18 +35,18 @@ async function insertOrder(client, parsedOrder) {
     name: parsedOrder.buyer_name,
     email: contact.includes('@') ? contact : null,
     phone: !contact.includes('@') && contact ? contact : null,
-  });
+  }, factoryId);
 
   await client.query(
-    'UPDATE orders SET buyer_id = $1::uuid WHERE id = $2::uuid',
-    [buyer.id, orderId]
+    'UPDATE orders SET buyer_id = $1::uuid WHERE id = $2::uuid AND factory_id = $3::uuid',
+    [buyer.id, orderId, factoryId]
   );
 
   for (const item of parsedOrder.items) {
     await client.query(
       `INSERT INTO order_items
-         (order_id, garment_type, fabric_type, colour, quantity, size_breakdown, unit_price, special_notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (order_id, garment_type, fabric_type, colour, quantity, size_breakdown, unit_price, special_notes, factory_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         orderId,
         item.garment_type,
@@ -55,6 +56,7 @@ async function insertOrder(client, parsedOrder) {
         item.size_breakdown ? JSON.stringify(item.size_breakdown) : null,
         item.unit_price || null,
         item.special_notes || null,
+        factoryId,
       ]
     );
   }

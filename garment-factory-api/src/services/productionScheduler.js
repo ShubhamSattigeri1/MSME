@@ -46,11 +46,11 @@ function formatDate(date) {
   return date.toISOString().split('T')[0];
 }
 
-async function scheduleOrder(orderId) {
+async function scheduleOrder(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
 
-  const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
-  if (orderRes.rowCount === 0) throw new Error('Order not found');
+  const orderRes = await pool.query(factoryId ? 'SELECT * FROM orders WHERE id = $1 AND factory_id = $2' : 'SELECT * FROM orders WHERE id = $1', factoryId ? [orderId, factoryId] : [orderId]);
+  if (orderRes.rowCount === 0) throw new Error('Order not found or access denied');
   const order = orderRes.rows[0];
 
   const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [orderId]);
@@ -106,8 +106,8 @@ async function scheduleOrder(orderId) {
 
   if (!deadlineFeasible) {
     await pool.query(
-      `UPDATE orders SET deadline_at_risk = true, updated_at = NOW() WHERE id = $1`,
-      [orderId]
+      `UPDATE orders SET deadline_at_risk = true, updated_at = NOW() WHERE id = $1 AND factory_id = $2`,
+      [orderId, factoryId]
     );
 
     try {
@@ -126,7 +126,7 @@ async function scheduleOrder(orderId) {
   };
 }
 
-async function advanceStage(orderId) {
+async function advanceStage(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
 
   const scheduleRes = await pool.query(
@@ -155,8 +155,8 @@ async function advanceStage(orderId) {
 
   if (nextStage === 'done') {
     await pool.query(
-      "UPDATE orders SET status = 'shipped', updated_at = NOW() WHERE id = $1",
-      [orderId]
+      "UPDATE orders SET status = 'shipped', updated_at = NOW() WHERE id = $1 AND factory_id = $2",
+      [orderId, factoryId]
     );
 
     // Track actual completion in production_performance

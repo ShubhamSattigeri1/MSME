@@ -5,7 +5,7 @@ function formatDate(date) {
   return date.toISOString().split('T')[0];
 }
 
-async function suggestDeadline(orderData) {
+async function suggestDeadline(orderData, factoryId) {
   try {
     const items = orderData.items || [];
     if (!items.length) {
@@ -37,11 +37,17 @@ async function suggestDeadline(orderData) {
       let sampleSize = 0;
       try {
         const histRes = await pool.query(
-          `SELECT AVG(actual_days::float / NULLIF(quantity, 0)) as avg_days_per_unit,
-                  COUNT(*) as sample_size
-           FROM production_performance
-           WHERE garment_type = $1 AND actual_days IS NOT NULL`,
-          [garmentType]
+          factoryId
+            ? `SELECT AVG(pp.actual_days::float / NULLIF(pp.quantity, 0)) as avg_days_per_unit,
+                    COUNT(*) as sample_size
+               FROM production_performance pp
+               JOIN orders o ON o.id = pp.order_id
+               WHERE pp.garment_type = $1 AND pp.actual_days IS NOT NULL AND o.factory_id = $2`
+            : `SELECT AVG(actual_days::float / NULLIF(quantity, 0)) as avg_days_per_unit,
+                    COUNT(*) as sample_size
+               FROM production_performance
+               WHERE garment_type = $1 AND actual_days IS NOT NULL`,
+          factoryId ? [garmentType, factoryId] : [garmentType]
         );
         if (histRes.rows[0] && histRes.rows[0].sample_size > 0) {
           sampleSize = Number(histRes.rows[0].sample_size);
@@ -84,9 +90,15 @@ async function suggestDeadline(orderData) {
     let queueDays = 0;
     try {
       const queueRes = await pool.query(
-        `SELECT COALESCE(SUM(total_minutes), 0) as queue_minutes
-         FROM production_schedule
-         WHERE current_stage != 'done'`
+        factoryId
+          ? `SELECT COALESCE(SUM(ps.total_minutes), 0) as queue_minutes
+               FROM production_schedule ps
+               JOIN orders o ON o.id = ps.order_id
+               WHERE ps.current_stage != 'done' AND o.factory_id = $1`
+          : `SELECT COALESCE(SUM(total_minutes), 0) as queue_minutes
+               FROM production_schedule
+               WHERE current_stage != 'done'`,
+        factoryId ? [factoryId] : []
       );
       const queueMinutes = Number(queueRes.rows[0]?.queue_minutes || 0);
       queueDays = Math.ceil(queueMinutes / DAILY_CAPACITY_MINUTES);
@@ -98,16 +110,20 @@ async function suggestDeadline(orderData) {
     // STEP 3 — Material lead time
     let materialDelayDays = 0;
     let shortageMaterial = '';
-    try {
-      const requirements = new Map();
-      for (const item of items) {
-        const qty = Number(item.quantity);
-        const bomRes = await pool.query(
-          `SELECT b.material_id, b.qty_per_unit, m.qty_available, m.name, m.supplier_lead_days
-           FROM bom b JOIN materials m ON m.id = b.material_id
-           WHERE b.garment_type = $1`,
-          [item.garment_type]
-        );
+      try {
+        const requirements = new Map();
+        for (const item of items) {
+          const qty = Number(item.quantity);
+          const bomRes = await pool.query(
+            factoryId
+              ? `SELECT b.material_id, b.qty_per_unit, m.qty_available, m.name, m.supplier_lead_days
+                   FROM bom b JOIN materials m ON m.id = b.material_id
+                   WHERE b.garment_type = $1 AND b.factory_id = $2`
+              : `SELECT b.material_id, b.qty_per_unit, m.qty_available, m.name, m.supplier_lead_days
+                   FROM bom b JOIN materials m ON m.id = b.material_id
+                   WHERE b.garment_type = $1`,
+            factoryId ? [item.garment_type, factoryId] : [item.garment_type]
+          );
         for (const row of bomRes.rows) {
           const req = Number(row.qty_per_unit) * qty;
           const existing = requirements.get(row.material_id) || {

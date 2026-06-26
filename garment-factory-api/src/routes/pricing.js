@@ -13,7 +13,7 @@ function success(res, data, status = 200) {
 
 router.get('/settings', async (req, res, next) => {
   try {
-    return success(res, await getPricingSettings());
+    return success(res, await getPricingSettings(req.factoryId));
   } catch (err) {
     return next(err);
   }
@@ -21,7 +21,7 @@ router.get('/settings', async (req, res, next) => {
 
 router.put('/settings', async (req, res, next) => {
   try {
-    return success(res, await updatePricingSettings(req.body));
+    return success(res, await updatePricingSettings({ ...req.body, factory_id: req.factoryId }));
   } catch (err) {
     return next(err);
   }
