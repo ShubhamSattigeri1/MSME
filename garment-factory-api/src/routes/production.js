@@ -10,7 +10,7 @@ function success(res, data, status = 200) {
 
 router.post('/:orderId/schedule', async (req, res, next) => {
   try {
-    const schedule = await scheduleOrder(req.params.orderId);
+    const schedule = await scheduleOrder(req.params.orderId, req.factoryId);
     return success(res, schedule, 201);
   } catch (err) {
     return next(err);
@@ -19,7 +19,7 @@ router.post('/:orderId/schedule', async (req, res, next) => {
 
 router.post('/:orderId/advance-stage', async (req, res, next) => {
   try {
-    const result = await advanceStage(req.params.orderId);
+    const result = await advanceStage(req.params.orderId, req.factoryId);
     return success(res, { order_id: req.params.orderId, ...result });
   } catch (err) {
     return next(err);
@@ -28,6 +28,7 @@ router.post('/:orderId/advance-stage', async (req, res, next) => {
 
 router.get('/calendar', async (req, res, next) => {
   try {
+    const factoryId = req.factoryId;
     const { from, to } = req.query;
     let query = `
       SELECT
@@ -60,6 +61,9 @@ router.get('/calendar', async (req, res, next) => {
     const values = [];
     const conditions = [];
 
+    values.push(factoryId);
+    conditions.push(`o.factory_id = $1`);
+
     if (from) {
       values.push(from);
       conditions.push(`ps.expected_completion >= $${values.length}`);
@@ -69,9 +73,7 @@ router.get('/calendar', async (req, res, next) => {
       conditions.push(`ps.start_date <= $${values.length}`);
     }
 
-    if (conditions.length > 0) {
-      query += ` WHERE ${conditions.join(' AND ')}`;
-    }
+    query += ` WHERE ${conditions.join(' AND ')}`;
 
     query += ' ORDER BY ps.expected_completion ASC';
 

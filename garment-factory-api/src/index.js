@@ -22,8 +22,11 @@ const confirmationRouter = require('./routes/confirmation');
 const analyticsRouter = require('./routes/analytics');
 const garmentPricingRouter = require('./routes/garmentPricing');
 const factoriesRouter = require('./routes/factories');
-const { startPolling } = require('./services/gmailPoller');
-
+const skusRouter = require('./routes/skus');
+const inventoryStatusRouter = require('./routes/inventoryStatus');
+const autoPurchaseOrdersRouter = require('./routes/autoPurchaseOrders');
+const stockAlertsRouter = require('./routes/stockAlerts');
+const billsRouter = require('./routes/bills');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -56,6 +59,11 @@ app.use('/api', ownerAuth, messagesRouter);
 app.use('/api/analytics', ownerAuth, analyticsRouter);
 app.use('/api/factories', ownerAuth, factoriesRouter);
 app.use('/api/garment-pricing', ownerAuth, garmentPricingRouter);
+app.use('/api/skus', ownerAuth, skusRouter);
+app.use('/api/inventory', ownerAuth, inventoryStatusRouter);
+app.use('/api/auto-purchase-orders', ownerAuth, autoPurchaseOrdersRouter);
+app.use('/api/stock-alerts', ownerAuth, stockAlertsRouter);
+app.use('/api/bills', ownerAuth, billsRouter);
 
 app.use(errorHandler);
 
@@ -92,5 +100,13 @@ setIO(io);
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT} (HTTP + WebSocket)`);
-  startPolling();
+  // Lazy-load gmail poller to avoid blocking startup with slow googleapis require
+  setTimeout(() => {
+    try {
+      const { startPolling } = require('./services/gmailPoller');
+      startPolling();
+    } catch (e) {
+      console.error('[GMAIL POLLER] Failed to start:', e.message);
+    }
+  }, 100);
 });

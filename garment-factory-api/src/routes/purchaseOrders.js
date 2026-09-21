@@ -35,6 +35,34 @@ router.put('/:id/status', async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'purchase order not found' });
     }
 
+    // Send email to supplier when PO is ordered
+    if (req.body.status === 'ordered') {
+      try {
+        const pool = require('../db');
+        const { sendEmail } = require('../services/gmailSender');
+
+        const supplierEmail = req.body.supplier_email || process.env.SUPPLIER_EMAIL || 'sattigeri46@gmail.com';
+        const matRes = await pool.query(
+          'SELECT m.name FROM materials m WHERE m.id = $1',
+          [purchaseOrder.material_id]
+        );
+        const materialName = matRes.rowCount > 0 ? matRes.rows[0].name : 'Unknown';
+
+        const subject = `Purchase Order #${purchaseOrder.id.slice(-8).toUpperCase()}`;
+        const body = `Dear Supplier,\n\nPlease supply the following material:\n\n  - ${materialName}: ${purchaseOrder.qty_ordered}\n\nPlease confirm receipt and delivery date.\n\nThanks,\nFactory Management`;
+
+        await sendEmail({
+          factoryId: purchaseOrder.factory_id || req.factoryId,
+          to: supplierEmail,
+          subject,
+          body,
+        });
+      } catch (emailErr) {
+        console.error('[PO] Failed to send email:', emailErr.message);
+        // Don't fail the request — PO status already updated
+      }
+    }
+
     return success(res, purchaseOrder);
   } catch (err) {
     return next(err);

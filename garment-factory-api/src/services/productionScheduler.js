@@ -1,5 +1,8 @@
 const pool = require('../db');
 const { assertUuid } = require('../utils/validation');
+const { getMultiplierMap, calculateRequiredQty } = require('./sizeMultiplierService');
+const inventoryEngine = require('./inventoryEngine');
+const autoPO = require('./autoPO');
 
 const STAGE_SEQUENCE = ['cutting', 'stitching', 'finishing', 'quality_check', 'packing'];
 
@@ -89,11 +92,12 @@ async function scheduleOrder(orderId, factoryId) {
   const deadlineFeasible = deliveryDeadline ? expectedCompletion <= deliveryDeadline : true;
 
   const scheduleRes = await pool.query(
-    `INSERT INTO production_schedule (order_id, start_date, expected_completion, total_minutes, days_required, deadline_feasible, current_stage, stage_breakdown)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO production_schedule (order_id, factory_id, start_date, expected_completion, total_minutes, days_required, deadline_feasible, current_stage, stage_breakdown)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
       orderId,
+      factoryId,
       formatDate(startDay),
       formatDate(expectedCompletion),
       totalMinutes,
@@ -130,8 +134,8 @@ async function advanceStage(orderId, factoryId) {
   assertUuid(orderId, 'orderId');
 
   const scheduleRes = await pool.query(
-    'SELECT * FROM production_schedule WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1',
-    [orderId]
+    'SELECT * FROM production_schedule WHERE order_id = $1 AND factory_id = $2 ORDER BY updated_at DESC LIMIT 1',
+    [orderId, factoryId]
   );
 
   if (scheduleRes.rowCount === 0) throw new Error('No production schedule found for this order');
@@ -152,6 +156,97 @@ async function advanceStage(orderId, factoryId) {
     'UPDATE production_schedule SET current_stage = $1, updated_at = NOW() WHERE id = $2',
     [nextStage, schedule.id]
   );
+
+  // Deduct materials from inventory when production starts (queued → cutting)
+  const deductionSummary = [];
+  if (currentStage === 'queued' && nextStage === 'cutting') {
+    // Phase 1: Reserve materials using SKU-based inventoryEngine
+    try {
+      const reserved = await inventoryEngine.reserve(orderId, factoryId);
+      if (reserved.alerts.length > 0) {
+        const { upsertAlert } = require('./stockAlerts');
+        for (const alert of reserved.alerts) {
+          await upsertAlert({ ...alert, factoryId });
+        }
+        console.warn(`[SCHEDULER] Stock alerts for order ${orderId}:`, reserved.alerts.length);
+      }
+
+      // Phase 2: Trigger auto PO check
+      try {
+        await autoPO.checkAndGenerate(factoryId);
+      } catch (poErr) {
+        console.error('[SCHEDULER] Auto PO check failed:', poErr.message);
+      }
+    } catch (err) {
+      console.error('[SCHEDULER] Inventory reserve failed:', err.message);
+    }
+
+    try {
+      const multiplierMap = await getMultiplierMap(factoryId);
+      const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [orderId]);
+      const deductions = new Map();
+
+      for (const item of itemsRes.rows) {
+        const sizeBreakdown = item.size_breakdown
+          ? (typeof item.size_breakdown === 'string' ? JSON.parse(item.size_breakdown) : item.size_breakdown)
+          : null;
+
+        const bomRes = await pool.query(
+          `SELECT b.material_id, b.qty_per_unit, m.name AS material_name, m.qty_available
+           FROM bom b
+           JOIN materials m ON m.id = b.material_id
+           WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2 AND m.factory_id = $2`,
+          [item.garment_type, factoryId]
+        );
+
+        for (const row of bomRes.rows) {
+          const requiredQty = calculateRequiredQty(Number(row.qty_per_unit), Number(item.quantity), sizeBreakdown, multiplierMap);
+          const key = `${row.material_id}`;
+          const existing = deductions.get(key) || {
+            material_id: row.material_id,
+            material_name: row.material_name,
+            garment_type: [],
+            qty: 0,
+            available: Number(row.qty_available),
+          };
+          existing.garment_type.push(item.garment_type);
+          existing.qty += requiredQty;
+          deductions.set(key, existing);
+        }
+      }
+
+      for (const [, info] of deductions) {
+        info.garment_type = [...new Set(info.garment_type)].join(", ");
+        const prevStock = info.available;
+        const deductQty = Number(info.qty.toFixed(4));
+        const newStock = prevStock - deductQty;
+
+        await pool.query(
+          `UPDATE materials SET qty_available = $1, updated_at = NOW() WHERE id = $2 AND factory_id = $3`,
+          [newStock < 0 ? 0 : Number(newStock.toFixed(4)), info.material_id, factoryId]
+        );
+
+        await pool.query(
+          `INSERT INTO material_movement_log (order_id, material_id, material_name, garment_type, qty_deducted, previous_stock, new_stock)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [orderId, info.material_id, info.material_name, info.garment_type, deductQty, Number(prevStock.toFixed(4)), newStock < 0 ? 0 : Number(newStock.toFixed(4))]
+        );
+
+        if (deductQty > prevStock) {
+          console.warn(`[SCHEDULER] Material "${info.material_name}" (${info.material_id}) short by ${(deductQty - prevStock).toFixed(2)} units after deduction for order ${orderId}`);
+        }
+
+        deductionSummary.push({
+          material_name: info.material_name,
+          garment_type: info.garment_type,
+          qty: deductQty,
+          stock_after: newStock < 0 ? 0 : Number(newStock.toFixed(4)),
+        });
+      }
+    } catch (err) {
+      console.error('[SCHEDULER] Material deduction failed at cutting stage:', err.message);
+    }
+  }
 
   if (nextStage === 'done') {
     await pool.query(
@@ -178,7 +273,7 @@ async function advanceStage(orderId, factoryId) {
     }
   }
 
-  return { previous_stage: currentStage, current_stage: nextStage };
+  return { previous_stage: currentStage, current_stage: nextStage, deductions: deductionSummary, deductionsCount: deductionSummary.length };
 }
 
 module.exports = {

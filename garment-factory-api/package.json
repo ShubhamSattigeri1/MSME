@@ -20,12 +20,14 @@
     "better-sqlite3": "^12.10.1",
     "cors": "^2.8.6",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "googleapis": "^173.0.0",
     "groq-sdk": "^1.2.1",
     "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
     "nodemailer": "^8.0.10",
-    "pg": "^8.13.1",
+    "pdfjs-dist": "^6.1.200",
     "socket.io": "^4.8.3"
   }
 }

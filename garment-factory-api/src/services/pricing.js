@@ -92,14 +92,15 @@ async function calculateOrderPrice(orderId, options = {}) {
     assertPositiveNumber(options.labour_minutes_per_unit, 'labour_minutes_per_unit');
   }
 
-  const settings = await getPricingSettings();
-  if (!settings) {
-    throw new Error('Pricing settings not found');
-  }
-
   const orderResult = await pool.query('SELECT * FROM orders WHERE id = $1', [orderId]);
   if (orderResult.rowCount === 0) {
     throw new Error('Order not found');
+  }
+  const factoryId = orderResult.rows[0].factory_id;
+
+  const settings = await getPricingSettings(factoryId);
+  if (!settings) {
+    throw new Error('Pricing settings not found');
   }
 
   const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [orderId]);
@@ -120,8 +121,8 @@ async function calculateOrderPrice(orderId, options = {}) {
       `SELECT b.qty_per_unit, m.unit_cost
        FROM bom b
        JOIN materials m ON m.id = b.material_id
-       WHERE b.garment_type = $1`,
-      [item.garment_type]
+       WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2 AND m.factory_id = $2`,
+      [item.garment_type, factoryId]
     );
 
     if (bomResult.rowCount === 0) {

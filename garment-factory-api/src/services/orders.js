@@ -2,6 +2,7 @@ const pool = require('../db');
 const insertOrder = require('../db/insertOrder');
 const { assertOneOf, assertUuid } = require('../utils/validation');
 const pricingEngine = require('./pricingEngine');
+const { getMultiplierMap, calculateRequiredQty } = require('./sizeMultiplierService');
 
 const ORDER_STATUSES = ['pending', 'confirmed', 'in_production', 'shipped', 'cancelled'];
 
@@ -16,19 +17,24 @@ async function createOrder(payload, factoryId) {
     const itemsRes = await client.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [orderId]);
     const items = itemsRes.rows;
 
+    const multiplierMap = await getMultiplierMap(factoryId);
     const requirements = new Map();
 
     for (const item of items) {
+      const sizeBreakdown = item.size_breakdown
+        ? (typeof item.size_breakdown === 'string' ? JSON.parse(item.size_breakdown) : item.size_breakdown)
+        : null;
+
       const bomRes = await client.query(
         `SELECT b.material_id, b.qty_per_unit, m.name AS material_name, m.qty_available, m.unit
          FROM bom b
          JOIN materials m ON m.id = b.material_id
-         WHERE b.garment_type = $1 AND b.factory_id = $2 AND m.factory_id = $2 FOR UPDATE`,
+         WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2 AND m.factory_id = $2 FOR UPDATE`,
         [item.garment_type, factoryId]
       );
 
       for (const row of bomRes.rows) {
-        const requiredQty = Number(row.qty_per_unit) * Number(item.quantity);
+        const requiredQty = calculateRequiredQty(Number(row.qty_per_unit), Number(item.quantity), sizeBreakdown, multiplierMap);
         const existing = requirements.get(row.material_id) || {
           material_id: row.material_id,
           material_name: row.material_name,
@@ -71,18 +77,34 @@ async function createOrder(payload, factoryId) {
       auto_pos_raised,
     };
 
-    if (shortfalls.length === 0) {
-      for (const req of requirements.values()) {
+    let price = null;
+    try {
+      price = await pricingEngine.calculateOrderPrice(orderId, { dbClient: client, factoryId });
+
+      if (price && price.items && Array.isArray(price.items)) {
+        for (const priceItem of price.items) {
+          await client.query(
+            `UPDATE order_items SET unit_price = $1 WHERE order_id = $2 AND garment_type = $3 AND factory_id = $4`,
+            [priceItem.unit_price, orderId, priceItem.garment_type, factoryId]
+          );
+        }
         await client.query(
-          `UPDATE materials SET qty_available = qty_available - $1, updated_at = NOW() WHERE id = $2 AND factory_id = $3`,
-          [Number(req.required.toFixed(4)), req.material_id, factoryId]
+          `UPDATE orders SET price_breakdown = $1, total_price = $2 WHERE id = $3 AND factory_id = $4`,
+          [JSON.stringify(price), price.order_total, orderId, factoryId]
         );
       }
+    } catch (e) {
+      console.error('[CREATE ORDER] Pricing calculation failed (order created without prices):', e.message);
     }
 
-    const price = await pricingEngine.calculateOrderPrice(orderId, { dbClient: client, factoryId });
-
     await client.query('COMMIT');
+
+    try {
+      const { generateQuotation } = require('./quotationGenerator');
+      await generateQuotation(orderId, factoryId);
+    } catch (e) {
+      console.error('[CREATE ORDER] Quotation generation failed:', e.message);
+    }
 
     const order = await getOrderById(orderId, factoryId);
     return { ...order, price_breakdown: price, material_status };
@@ -121,7 +143,12 @@ async function listOrders(filters = {}, factoryId) {
 
   const whereClause = `WHERE ${clauses.join(' AND ')}`;
   const result = await pool.query(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`, values);
-  return result.rows;
+  return result.rows.map(row => {
+    if (row && typeof row.price_breakdown === 'string') {
+      try { row.price_breakdown = JSON.parse(row.price_breakdown); } catch { row.price_breakdown = null; }
+    }
+    return row;
+  });
 }
 
 async function getOrderById(id, factoryId) {
@@ -133,7 +160,11 @@ async function getOrderById(id, factoryId) {
   }
 
   const itemsResult = await pool.query('SELECT * FROM order_items WHERE order_id = $1 AND factory_id = $2 ORDER BY id', [id, factoryId]);
-  return { ...orderResult.rows[0], items: itemsResult.rows };
+  const order = orderResult.rows[0];
+  if (order && typeof order.price_breakdown === 'string') {
+    try { order.price_breakdown = JSON.parse(order.price_breakdown); } catch { order.price_breakdown = null; }
+  }
+  return { ...order, items: itemsResult.rows };
 }
 
 async function updateOrderStatus(id, status, factoryId) {
@@ -154,6 +185,20 @@ async function updateOrderStatus(id, status, factoryId) {
   const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1 AND factory_id = $2', [id, factoryId]);
   order.items = itemsRes.rows;
 
+  // Mandatory SKU check before starting production
+  if (status === 'in_production') {
+    const skuCheck = await pool.query(
+      'SELECT COUNT(*) AS cnt FROM order_items WHERE order_id = $1 AND factory_id = $2 AND sku_id IS NULL',
+      [id, factoryId]
+    );
+    if (Number(skuCheck.rows[0].cnt) > 0) {
+      throw new Error(
+        `Cannot start production: ${skuCheck.rows[0].cnt} item(s) have no SKU assigned. ` +
+        `Go to Pending Review > Unmatched SKU to resolve.`
+      );
+    }
+  }
+
   try {
     if (status === 'confirmed') {
       const productionScheduler = require('./productionScheduler');
@@ -172,18 +217,11 @@ async function updateOrderStatus(id, status, factoryId) {
     }
 
     if (status === 'in_production') {
-      await pool.query(
-        `UPDATE production_schedule SET current_stage = 'cutting', start_date = CURRENT_DATE, updated_at = NOW()
-         WHERE order_id = $1 AND factory_id = $2 AND current_stage = 'queued'`,
-        [id, factoryId]
-      );
+      const productionScheduler = require('./productionScheduler');
+      const stageResult = await productionScheduler.advanceStage(id, factoryId);
 
       const notifier = require('./notifier');
-      const scheduleRes = await pool.query(
-        'SELECT * FROM production_schedule WHERE order_id = $1 AND factory_id = $2 ORDER BY updated_at DESC LIMIT 1',
-        [id, factoryId]
-      );
-      await notifier.sendProductionStarted(order, scheduleRes.rows[0] || {});
+      await notifier.sendProductionStarted(order, { ...order, current_stage: stageResult.current_stage });
     }
 
     if (status === 'shipped') {

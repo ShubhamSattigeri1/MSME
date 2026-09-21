@@ -40,11 +40,12 @@ async function raisePurchaseOrder(payload) {
     throw new Error('Material not found');
   }
 
+  const supplierEmail = payload.supplier_email || 'sattigeri46@gmail.com';
   const result = await pool.query(
-    `INSERT INTO purchase_orders (material_id, qty_ordered, status)
-     VALUES ($1, $2, $3)
+    `INSERT INTO purchase_orders (material_id, qty_ordered, status, supplier_email)
+     VALUES ($1, $2, $3, $4)
      RETURNING *`,
-    [payload.material_id, payload.qty_ordered, payload.status || 'pending']
+    [payload.material_id, payload.qty_ordered, payload.status || 'pending', supplierEmail]
   );
 
   return result.rows[0];

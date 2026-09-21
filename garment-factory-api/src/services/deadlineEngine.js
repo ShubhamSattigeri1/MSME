@@ -118,10 +118,10 @@ async function suggestDeadline(orderData, factoryId) {
             factoryId
               ? `SELECT b.material_id, b.qty_per_unit, m.qty_available, m.name, m.supplier_lead_days
                    FROM bom b JOIN materials m ON m.id = b.material_id
-                   WHERE b.garment_type = $1 AND b.factory_id = $2`
+                    WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2`
               : `SELECT b.material_id, b.qty_per_unit, m.qty_available, m.name, m.supplier_lead_days
                    FROM bom b JOIN materials m ON m.id = b.material_id
-                   WHERE b.garment_type = $1`,
+                   WHERE LOWER(b.garment_type) = LOWER($1)`,
             factoryId ? [item.garment_type, factoryId] : [item.garment_type]
           );
         for (const row of bomRes.rows) {

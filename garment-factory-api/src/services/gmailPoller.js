@@ -163,6 +163,22 @@ async function pollFactory(connection) {
         continue;
       }
 
+      if (threadId) {
+        const replyRes = await pool.query(
+          'SELECT id FROM orders WHERE thread_id = $1 AND factory_id = $2',
+          [threadId, connection.factory_id]
+        );
+        if (replyRes.rowCount > 0) {
+          const orderId = replyRes.rows[0].id;
+          await pool.query(
+            `INSERT INTO messages (order_id, sender_type, sender_id, body, factory_id)
+             VALUES ($1, 'buyer', $2, $3, $4)`,
+            [orderId, senderEmail, body, connection.factory_id]
+          );
+          continue;
+        }
+      }
+
       await processIncomingMessage({
         factory_id: connection.factory_id,
         source: 'gmail',

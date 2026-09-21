@@ -1,6 +1,5 @@
 const express = require('express');
 const pool = require('../db');
-const { clearCache } = require('../db/dbRouter');
 
 const router = express.Router();
 
@@ -34,8 +33,6 @@ router.put('/storage-mode', async (req, res, next) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Factory not found' });
     }
-
-    clearCache(req.factoryId);
 
     return res.json({ success: true, data: result.rows[0] });
   } catch (err) {

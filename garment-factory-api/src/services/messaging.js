@@ -126,7 +126,7 @@ async function markMessagesRead(orderId, readerType, factoryId = null) {
 async function getUnreadCount(orderId, readerType, factoryId = null) {
   assertUuid(orderId, 'orderId');
   
-  let query = `SELECT COUNT(*) FROM messages WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL`;
+  let query = `SELECT COUNT(*) AS count FROM messages WHERE order_id = $1::uuid AND sender_type != $2 AND read_at IS NULL`;
   const values = [orderId, readerType];
   
   if (factoryId) {

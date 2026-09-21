@@ -1,6 +1,52 @@
-▲ Next.js 16.2.9 (Turbopack)
-- Local:         http://localhost:3001
-- Network:       http://192.168.1.17:3001
-- Environments: .env.local
-✓ Ready in 3.6s
+1. Size - small(5 button) & Large(7 button)
+2. Colour - black and white
+3. Garment type - cotton and wool
 
+Combinations :
+1. Small Black Cotton - 1 m ^2 (black cotton + 5 button)
+2. Small Black wool - 1 m ^2 (black wool + 5 button)
+3. Small white Cotton - 1 m ^2 (white cotton + 5 buttons)
+4. Small white wool - 1 m ^2 (white wool + 5 buttons)
+5. Large black cotton - 1.5 m ^2 (black cotton + 7 buttons)
+6. Large black wool - 1.5 m ^2 (black wool + 7 buttons)
+7. large white Cotton - 1.5 m ^2 (white cotton + 7 buttons)
+8. large white wool - 1.5 m ^2 (white wool + 7 buttons)
+
+Inventory : Buttons = 1000; Black Cotton = 100 m^2; white Cotton = 150 m^2; Black wool = 100 m^2; white wool = 150 m^2;
+
+
+The factory can produce 8 different SKUs as mentioned above
+To completely define any SKU, its size, color, and garment type must be specified.
+Order--> 100 black shirts and 200 cotton shirts.
+Refined order after initiating the query --> 100 small, black, cotton and 200 large, black, cotton
+
+4. Raise PO automatically to order Materials if less quantity of raw materials (2x the required NOTE : Factor of 2 should be adjustable to any other number more than 1 and positive integer) to the kedar188200@gmail.com (raw material supplier)
+
+5. update the quantity from the bill (pdf - parser)
+I. Alert to owner for updation of the inventory
+
+Updated Inventory : Buttons = 2800; Black Cotton = 700 m^2; white Cotton = 150 m^2; Black wool = 100 m^2; white wool = 150 m^2;
+Reserved Inventory(how much stock is in being used at the production for particular order):
+
+Now we can make the order...!
+
+Again update the inventory
+ 
+Updated Inventory : Buttons = 900; Black Cotton = 300 m^2; white Cotton = 150 m^2; Black wool = 100 m^2; white wool = 150 m^2;
+
+
+*********  loop ***********
+
+
+Minimum Requiered Inventory : Inventory : Buttons = 500; Black Cotton = 50 m^2; white Cotton = 50 m^2; Black wool = 50 m^2; white wool = 50 m^2;
+
+
+******* Stock Alert (For Individual garment type and required as well)********
+
+
+
+
+
+1. Current Inventory
+2. Reserved Inventory
+3. Total Inventory = Reserve + Current

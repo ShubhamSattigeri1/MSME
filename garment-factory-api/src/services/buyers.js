@@ -44,7 +44,7 @@ async function listBuyers(filters = {}) {
     `SELECT
        b.*,
        COUNT(DISTINCT o.id) AS order_count,
-       COALESCE(SUM(DISTINCT o.total_price) FILTER (WHERE o.id IS NOT NULL), 0) AS total_order_value,
+       COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN o.total_price ELSE 0 END), 0) AS total_order_value,
        COALESCE(ur.unread_count, 0) AS unread_count,
        lm.last_message_at
      FROM buyers b

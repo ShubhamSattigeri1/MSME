@@ -77,10 +77,10 @@ async function generateQuotation(orderId, factoryId) {
     await client.query('BEGIN');
 
     const insertRes = await client.query(
-      `INSERT INTO quotations (order_id, quotation_number, data, sent_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO quotations (order_id, factory_id, quotation_number, data, sent_at)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [orderId, quotation_number, quotation, null]
+      [orderId, factoryId, quotation_number, quotation, null]
     );
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();

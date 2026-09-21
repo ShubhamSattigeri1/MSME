@@ -23,7 +23,8 @@ function assertNonNegativeNumber(value, fieldName) {
 function assertUuid(value, fieldName) {
   assertRequired(value, fieldName);
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(value)) {
+  const hexPattern = /^[0-9a-f]{32}$/i;
+  if (!uuidPattern.test(value) && !hexPattern.test(value)) {
     throw new Error(`${fieldName} must be a valid UUID`);
   }
 }

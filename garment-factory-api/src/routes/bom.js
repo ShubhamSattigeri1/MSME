@@ -22,7 +22,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    return success(res, await addBomEntry(req.body), 201);
+    return success(res, await addBomEntry({ ...req.body, factory_id: req.factoryId }), 201);
   } catch (err) {
     return next(err);
   }

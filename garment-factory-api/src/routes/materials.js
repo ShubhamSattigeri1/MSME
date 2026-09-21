@@ -4,6 +4,7 @@ const {
   checkAvailability,
   listMaterials,
   updateMaterial,
+  getMaterialMovements,
 } = require('../services/materials');
 
 const router = express.Router();
@@ -22,7 +23,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    return success(res, await addMaterial(req.body), 201);
+    return success(res, await addMaterial({ ...req.body, factory_id: req.factoryId }), 201);
   } catch (err) {
     return next(err);
   }
@@ -45,6 +46,15 @@ router.put('/:id', async (req, res, next) => {
 router.post('/availability', async (req, res, next) => {
   try {
     return success(res, await checkAvailability(req.body.items, req.factoryId));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.get('/movements', async (req, res, next) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    return success(res, await getMaterialMovements(req.factoryId, limit));
   } catch (err) {
     return next(err);
   }

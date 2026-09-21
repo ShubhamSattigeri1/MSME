@@ -18,12 +18,15 @@ RULES:
 - Each item must have its own quantity, fabric_type, colour, size_breakdown.
 - If a field applies to all items (e.g. "all in cotton"), apply it to each item.
 - Example: "Need 200 blue cotton shirts (M:100 L:100) and 300 black polyester trousers (32:150 34:150)" → items.length === 2.
+- If the email is a reply or contains quoted/replied text from a previous email, scan the entire body (including quoted text) for an order reference like "Order Ref: MSME-xxxx" or "Ref: MSME-xxxx". Extract the full reference string (e.g. "MSME-a3b2c1d4").
+- Ignore any image references, file attachments, or embedded media (e.g. [image: ...], cid:..., <img...>). Focus only on the written text content.
 
 Respond ONLY with valid JSON. No preamble, no explanation, no markdown fences.
 
 OUTPUT FORMAT:
 {
   "is_order": true,
+  "order_reference": "string or null",
   "buyer_name": "string or null",
   "buyer_contact": "string or null",
   "delivery_deadline": "YYYY-MM-DD or null",
@@ -82,7 +85,9 @@ async function parseOrderMessage(rawMessage) {
 
     if (!parsed.is_order) {
       console.log('[INTAKE] Not an order message');
-      return { is_order: false };
+      // Preserve extracted fields (delivery_deadline, items, order_reference, etc.)
+      // for the merge path in intakeProcessor — the caller still checks is_order
+      return parsed;
     }
 
     if (parsed.missing_fields && parsed.missing_fields.length > 0) {

@@ -30,17 +30,37 @@ async function insertOrder(client, parsedOrder, factoryId) {
   const orderId = orderResult.rows[0].id;
 
   // Auto-link or create buyer profile
+  let buyerEmail = null;
+  let buyerPhone = null;
+
   const contact = parsedOrder.buyer_contact || '';
+  if (contact.includes('@')) {
+    buyerEmail = contact;
+  } else if (contact && contact.match(/^[\d\+\-\s]+$/)) {
+    buyerPhone = contact;
+  }
+
+  if (!buyerEmail && parsedOrder.buyer_email) {
+    buyerEmail = parsedOrder.buyer_email;
+  }
+
   const buyer = await findOrCreateBuyer({
     name: parsedOrder.buyer_name,
-    email: contact.includes('@') ? contact : null,
-    phone: !contact.includes('@') && contact ? contact : null,
+    email: buyerEmail,
+    phone: buyerPhone,
   }, factoryId);
 
   await client.query(
     'UPDATE orders SET buyer_id = $1::uuid WHERE id = $2::uuid AND factory_id = $3::uuid',
     [buyer.id, orderId, factoryId]
   );
+
+  if (buyerEmail) {
+    await client.query(
+      'UPDATE orders SET buyer_contact = $1 WHERE id = $2::uuid AND factory_id = $3::uuid',
+      [buyerEmail, orderId, factoryId]
+    );
+  }
 
   for (const item of parsedOrder.items) {
     await client.query(

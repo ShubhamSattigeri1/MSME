@@ -2,7 +2,7 @@ const pool = require('../db');
 const { google } = require('googleapis');
 const { getAuthenticatedClient, refreshAccessToken } = require('./gmailClient');
 
-async function sendEmail({ factoryId, to, subject, body, threadId, inReplyTo, references }) {
+async function sendEmail({ factoryId, from, to, subject, body, threadId, inReplyTo, references }) {
   const connRes = await pool.query(
     'SELECT * FROM gmail_connections WHERE factory_id = $1',
     [factoryId]
@@ -29,8 +29,9 @@ async function sendEmail({ factoryId, to, subject, body, threadId, inReplyTo, re
   const auth = getAuthenticatedClient(connection.access_token, connection.refresh_token, connection.token_expiry);
   const gmail = google.gmail({ version: 'v1', auth });
 
+  const senderEmail = from || connection.email;
   const headers = [
-    `From: ${connection.email}`,
+    `From: ${senderEmail}`,
     `To: ${to}`,
     `Subject: ${subject}`,
     'MIME-Version: 1.0',

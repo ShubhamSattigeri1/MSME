@@ -106,7 +106,7 @@ async function checkAvailability(items, factoryId) {
          m.unit
        FROM bom b
        JOIN materials m ON m.id = b.material_id
-       WHERE b.garment_type = $1 AND b.factory_id = $2`,
+       WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2`,
       [item.garment_type, factoryId]
     );
 
@@ -142,9 +142,23 @@ async function checkAvailability(items, factoryId) {
   };
 }
 
+async function getMaterialMovements(factoryId, limit = 50) {
+  const result = await pool.query(
+    `SELECT mml.*, o.buyer_name
+     FROM material_movement_log mml
+     JOIN orders o ON o.id = mml.order_id
+     WHERE o.factory_id = $1
+     ORDER BY mml.deducted_at DESC
+     LIMIT $2`,
+    [factoryId, limit]
+  );
+  return result.rows;
+}
+
 module.exports = {
   listMaterials,
   addMaterial,
   updateMaterial,
   checkAvailability,
+  getMaterialMovements,
 };

@@ -4,6 +4,7 @@ const ownerAuth = require('../middleware/ownerAuth');
 const { parseOrderMessage } = require('../services/orderParser');
 const insertOrder = require('../db/insertOrder');
 const { createOrder } = require('../services/orders');
+const { normalizeSize } = require('../services/skuResolver');
 const { checkAvailability } = require('../services/materials');
 const { suggestDeadline } = require('../services/deadlineEngine');
 const {
@@ -21,8 +22,8 @@ const { processIncomingMessage } = require('../services/intakeProcessor');
 const router = express.Router();
 
 // Shared helper: generate follow-up message from missing_fields array
-function buildFollowupMessage(missingFields) {
-  const missing = missingFields || [];
+function buildFollowupMessage(missingFields, reviewId) {
+  const missing = typeof missingFields === 'string' ? JSON.parse(missingFields) : (missingFields || []);
   const questions = missing.map(field => {
     if (FOLLOWUP_QUESTIONS[field]) return FOLLOWUP_QUESTIONS[field];
 
@@ -52,7 +53,14 @@ function buildFollowupMessage(missingFields) {
 
   if (questions.length === 0) return null;
 
-  return `Hi! Thanks for your order. To process it, could you please share a few more details:\n\n${questions.map(q => `• ${q}`).join('\n')}\n\nThanks!`;
+  let message = `Hi! Thanks for your order. To process it, could you please share a few more details:\n\n${questions.map(q => `• ${q}`).join('\n')}\n\nThanks!`;
+
+  if (reviewId) {
+    const ref = `MSME-${reviewId.slice(-8)}`;
+    message += `\n\n---\nOrder Ref: ${ref}\nPlease keep this reference in your reply for faster processing.`;
+  }
+
+  return message;
 }
 
 function success(res, data, status = 200) {
@@ -431,7 +439,7 @@ router.get('/followups/due', async (req, res, next) => {
     );
 
     const followups = result.rows.map(row => {
-      const message = buildFollowupMessage(row.missing_fields);
+      const message = buildFollowupMessage(row.missing_fields, row.id);
       return message ? {
         id: row.id,
         source: row.source,
@@ -481,7 +489,7 @@ router.get('/pending/:id/followup-draft', ownerAuth, async (req, res, next) => {
     }
 
     const row = result.rows[0];
-    const message = buildFollowupMessage(row.missing_fields);
+    const message = buildFollowupMessage(row.missing_fields, row.id);
 
     if (!message) {
       return res.status(400).json({ success: false, error: 'No missing fields to follow up on' });
@@ -496,6 +504,177 @@ router.get('/pending/:id/followup-draft', ownerAuth, async (req, res, next) => {
         source: row.source,
       },
     });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// SKU Issues: orders with complete item data but no matching SKU
+router.get('/sku-issues', ownerAuth, async (req, res, next) => {
+  try {
+    const factoryId = req.factoryId;
+
+    // 1. Get ALL active SKUs for this factory with their attribute sets
+    const skusRes = await pool.query(
+      `SELECT id, sku_code, attribute_set FROM product_skus WHERE factory_id = $1 AND active = 1`,
+      [factoryId]
+    );
+    const skus = skusRes.rows.map(s => ({
+      ...s,
+      attributes: typeof s.attribute_set === 'string' ? JSON.parse(s.attribute_set) : s.attribute_set,
+    }));
+
+    // 2. Find orders in pending/confirmed status with items lacking sku_id
+    const itemsRes = await pool.query(
+      `SELECT oi.id AS item_id, oi.order_id, oi.garment_type, oi.fabric_type, oi.colour,
+              oi.quantity, oi.size_breakdown, oi.sku_id,
+              o.buyer_name, o.status, o.created_at
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.factory_id = $1
+         AND o.status IN ('pending', 'confirmed')
+         AND oi.sku_id IS NULL`,
+      [factoryId]
+    );
+
+    // 3. Group by order and determine which items are "unmatched"
+    const orderMap = new Map();
+    for (const item of itemsRes.rows) {
+      // Determine size from size_breakdown keys
+      let size = 'standard';
+      if (item.size_breakdown) {
+        const sb = typeof item.size_breakdown === 'string' ? JSON.parse(item.size_breakdown) : item.size_breakdown;
+        const keys = Object.keys(sb).filter(k => Number(sb[k]) > 0);
+        if (keys.length === 1) size = keys[0];
+        else if (keys.length > 1) size = 'multi'; // can't resolve to single SKU
+      }
+
+      const hasCompleteData = item.fabric_type && item.fabric_type !== ''
+        && item.colour && item.colour !== '';
+      const missingFields = [];
+      if (!item.fabric_type) missingFields.push('fabric_type');
+      if (!item.colour) missingFields.push('colour');
+      if (!item.garment_type) missingFields.push('garment_type');
+
+      // Try to match to an existing SKU (must match garment_type + colour + fabric + size)
+      const matchedSku = hasCompleteData
+        ? skus.find(s => {
+            const a = s.attributes;
+            return a.garment_type === item.garment_type
+                && a.color === item.colour
+                && a.material === item.fabric_type
+                && (!a.size || normalizeSize(a.size) === normalizeSize(size));
+          })
+        : null;
+
+      const orderId = item.order_id;
+      if (!orderMap.has(orderId)) {
+        const orderRes = await pool.query(
+          'SELECT id, buyer_name, buyer_contact, status, created_at FROM orders WHERE id = $1',
+          [orderId]
+        );
+        if (orderRes.rowCount === 0) continue;
+        orderMap.set(orderId, {
+          ...orderRes.rows[0],
+          items: [],
+        });
+      }
+      const order = orderMap.get(orderId);
+      order.items.push({
+        item_id: item.item_id,
+        garment_type: item.garment_type,
+        fabric_type: item.fabric_type,
+        colour: item.colour,
+        quantity: item.quantity,
+        size_breakdown: item.size_breakdown,
+        resolved_size: size,
+        matched_sku: matchedSku ? { id: matchedSku.id, sku_code: matchedSku.sku_code } : null,
+        data_complete: hasCompleteData,
+        missing_fields: missingFields,
+      });
+    }
+
+    // Separate matched (can auto-assign) vs unmatched
+    const unmatchedOrders = [];
+    const autoAssignOrders = [];
+
+    for (const order of orderMap.values()) {
+      const unmatched = order.items.filter(i => !i.matched_sku);
+      const matched = order.items.filter(i => i.matched_sku);
+
+      if (unmatched.length > 0) {
+        unmatchedOrders.push({ ...order, items: unmatched, matched_count: matched.length });
+      }
+      if (matched.length > 0) {
+        autoAssignOrders.push({ ...order, items: matched });
+      }
+    }
+
+    return success(res, {
+      unmatched_items: unmatchedOrders,
+      auto_assign: autoAssignOrders,
+      total_skus: skus.length,
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Auto-assign SKUs to order items that match an existing SKU
+router.post('/sku-issues/auto-assign', ownerAuth, async (req, res, next) => {
+  try {
+    const factoryId = req.factoryId;
+
+    const skusRes = await pool.query(
+      `SELECT id, sku_code, attribute_set FROM product_skus WHERE factory_id = $1 AND active = 1`,
+      [factoryId]
+    );
+    const skus = skusRes.rows.map(s => ({
+      ...s,
+      attributes: typeof s.attribute_set === 'string' ? JSON.parse(s.attribute_set) : s.attribute_set,
+    }));
+
+    const itemsRes = await pool.query(
+      `SELECT oi.id AS item_id, oi.order_id, oi.garment_type, oi.fabric_type, oi.colour,
+              oi.quantity, oi.size_breakdown
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.factory_id = $1
+         AND o.status IN ('pending', 'confirmed')
+         AND oi.sku_id IS NULL
+         AND oi.fabric_type IS NOT NULL AND oi.fabric_type != ''
+         AND oi.colour IS NOT NULL AND oi.colour != ''`,
+      [factoryId]
+    );
+
+    let assigned = 0;
+    for (const item of itemsRes.rows) {
+      let size = 'standard';
+      if (item.size_breakdown) {
+        const sb = typeof item.size_breakdown === 'string' ? JSON.parse(item.size_breakdown) : item.size_breakdown;
+        const keys = Object.keys(sb).filter(k => Number(sb[k]) > 0);
+        if (keys.length === 1) size = keys[0];
+        else if (keys.length > 1) size = 'multi';
+      }
+
+      const matchedSku = skus.find(s => {
+        const a = s.attributes;
+        return a.garment_type === item.garment_type
+            && a.color === item.colour
+            && a.material === item.fabric_type
+            && (!a.size || normalizeSize(a.size) === normalizeSize(size));
+      });
+
+      if (matchedSku) {
+        await pool.query(
+          `UPDATE order_items SET sku_id = $1 WHERE id = $2`,
+          [matchedSku.id, item.item_id]
+        );
+        assigned += 1;
+      }
+    }
+
+    return success(res, { assigned });
   } catch (err) {
     return next(err);
   }

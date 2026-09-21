@@ -12,7 +12,7 @@ async function listBom(filters = {}) {
 
   if (filters.garment_type) {
     values.push(filters.garment_type);
-    conditions.push(`b.garment_type = $${values.length}`);
+    conditions.push(`LOWER(b.garment_type) = LOWER($${values.length})`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

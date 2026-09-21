@@ -10,9 +10,25 @@ const MINUTES_PER_GARMENT = {
   'kids frock': 12,
 };
 
+const DEFAULT_PRICING = {
+  labour_cost_per_min: 2.00,
+  overhead_per_unit: 5.00,
+  default_wastage_pct: 0.10,
+  default_margin_pct: 0.20,
+  minimum_margin_pct: 0.05,
+};
+
 async function getPricingSettings(factoryId) {
-  const res = await pool.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]);
-  return res.rows[0] || null;
+  let res = await pool.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]);
+  if (res.rowCount === 0) {
+    res = await pool.query(
+      `INSERT INTO pricing_settings (factory_id, labour_cost_per_min, overhead_per_unit, default_wastage_pct, default_margin_pct, minimum_margin_pct)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [factoryId, DEFAULT_PRICING.labour_cost_per_min, DEFAULT_PRICING.overhead_per_unit, DEFAULT_PRICING.default_wastage_pct, DEFAULT_PRICING.default_margin_pct, DEFAULT_PRICING.minimum_margin_pct]
+    );
+  }
+  return res.rows[0];
 }
 
 async function calculateOrderPrice(orderId, overrides = {}) {
@@ -23,7 +39,6 @@ async function calculateOrderPrice(orderId, overrides = {}) {
   if (!factoryId) throw new Error('factoryId is required');
 
   const settings = await (overrides.dbClient ? client.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]).then(r => r.rows[0]) : getPricingSettings(factoryId));
-  if (!settings) throw new Error('Pricing settings not found');
 
   const wastage_pct = Number((overrides.wastage_pct !== undefined ? overrides.wastage_pct : settings.default_wastage_pct));
   const labour_cost_per_min = Number((overrides.labour_cost_per_min !== undefined ? overrides.labour_cost_per_min : settings.labour_cost_per_min));
@@ -81,7 +96,7 @@ async function calculateOrderPrice(orderId, overrides = {}) {
       `SELECT b.qty_per_unit, m.unit_cost
        FROM bom b
        JOIN materials m ON m.id = b.material_id
-       WHERE b.garment_type = $1 AND b.factory_id = $2 AND m.factory_id = $2`,
+       WHERE LOWER(b.garment_type) = LOWER($1) AND b.factory_id = $2 AND m.factory_id = $2`,
       [item.garment_type, factoryId]
     );
 

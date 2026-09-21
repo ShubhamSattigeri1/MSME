@@ -204,11 +204,21 @@ router.post('/admin/:orderId/resend', async (req, res, next) => {
     const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1::uuid', [orderId]);
     if (orderRes.rowCount === 0) return res.status(404).json({ success: false, error: 'Order not found' });
 
-    const quotationRes = await pool.query(
+    let quotationRes = await pool.query(
       'SELECT * FROM quotations WHERE order_id = $1::uuid ORDER BY created_at DESC LIMIT 1',
       [orderId]
     );
-    if (quotationRes.rowCount === 0) return res.status(404).json({ success: false, error: 'No quotation found for this order' });
+    if (quotationRes.rowCount === 0) {
+      const { generateQuotation } = require('../services/quotationGenerator');
+      const newQ = await generateQuotation(orderId, req.factoryId);
+      quotationRes = await pool.query(
+        'SELECT * FROM quotations WHERE order_id = $1::uuid ORDER BY created_at DESC LIMIT 1',
+        [orderId]
+      );
+      if (quotationRes.rowCount === 0) {
+        return res.status(500).json({ success: false, error: 'Failed to auto-generate quotation' });
+      }
+    }
 
     const order = orderRes.rows[0];
     const quotation = quotationRes.rows[0];

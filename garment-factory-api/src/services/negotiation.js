@@ -13,7 +13,7 @@ async function applyNegotiatedMargin(orderId, newMarginPct, notes, factoryId) {
     throw new Error('margin_pct must be between 0 and 1');
   }
 
-  const settingsRes = await pool.query('SELECT * FROM pricing_settings ORDER BY updated_at DESC LIMIT 1');
+  const settingsRes = await pool.query('SELECT * FROM pricing_settings WHERE factory_id = $1 ORDER BY updated_at DESC LIMIT 1', [factoryId]);
   const settings = settingsRes.rows[0];
   if (!settings) throw new Error('Pricing settings not found');
 
@@ -52,7 +52,7 @@ async function applyNegotiatedMargin(orderId, newMarginPct, notes, factoryId) {
     [newMarginPct, notes || null, JSON.stringify(updatedHistory), orderId, factoryId]
   );
 
-  const price = await calculateOrderPrice(orderId, { margin_pct: newMarginPct });
+  const price = await calculateOrderPrice(orderId, { margin_pct: newMarginPct, factoryId });
   const quotation = await generateQuotation(orderId, factoryId);
 
   const warning = newMarginPct < minimum_margin_pct
