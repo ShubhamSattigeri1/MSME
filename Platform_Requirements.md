@@ -15,16 +15,16 @@
    - The first page has to be Sign up/Sign in page. With options to Sign if already registered, or sign up if not registered.
    - **User input for Sign in:** Email and Password for the user and sign in option
    - **User input for Sign up:** This will have two pages
-            - 1. **Organization registration:**
-                 - * Name of the organization/factory
-                 - * Name of the owner
-                 - * Official Email Id and phone number of the factory
-                 - * Address of the factory
-            - 2. **User registration:**
-                 - * Name of the user
-                 - * Role of the user
-                 - * Email ID and phone number of the user
-                 - * Employee ID  
+     - 1. **Organization registration:**
+       -  Name of the organization/factory
+       -  Name of the owner
+       -  Official Email Id and phone number of the factory
+       -  Address of the factory
+    - 2. **User registration:**
+         -  Name of the user
+         -  Role of the user
+         -  Email ID and phone number of the user
+         -  Employee ID  
 
 - **Order Intake & Parsing:** 
 
