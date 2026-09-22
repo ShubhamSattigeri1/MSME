@@ -4,13 +4,27 @@
 
 - **Target Audience:** The system is designed for factory owners, administrative staff, and operators working on the production floor. 
 
-- **Success Metrics:** The project is successful if it can automatically read and organize incoming orders using AI without requiring human data entry. It must also protect the factory's profits by strictly enforcing minimum pricing margins during negotiations. Finally, it must prevent material shortages by automatically reserving inventory and ordering new supplies before they run out. 
+- **Success Metrics:** The project is successful if it can automatically read and organize incoming orders using AI without requiring human data entry. It must also protect the factory's profits by strictly enforcing minimum pricing margins during negotiations. Finally, it must prevent material shortages by automatically reserving inventory and ordering new supplies before they run out. Plan for the execution of the order as per the workflow of the factory.  
 
 # **2. Scope and Boundaries** 
 
 - **In Scope:** The final product will include automated order reading from emails and webhooks. It will use advanced AI (Groq Llama 3.3 70B and Gemini) to pull exact details from conversational text. The system will feature a dynamic pricing calculator based on a customized Bill of Materials (BOM). Additionally, it will schedule production based on factory capacity, track progress across different manufacturing stages, and provide a real-time dashboard for all users. 
 
 # **3. Functional Requirements (The "What")** 
+- **Sign up/ Sign in page:**
+   - The first page has to be Sign up/Sign in page. With options to Sign if already registered, or sign up if not registered.
+   - **User input for Sign in:** Email and Password for the user and sign in option
+   - **User input for Sign up:** This will have two pages
+            - 1. **Organization registration:**
+                 - * Name of the organization/factory
+                 - * Name of the owner
+                 - * Official Email Id and phone number of the factory
+                 - * Address of the factory
+            - 2. **User registration:**
+                 - * Name of the user
+                 - * Role of the user
+                 - * Email ID and phone number of the user
+                 - * Employee ID  
 
 - **Order Intake & Parsing:** 
 
