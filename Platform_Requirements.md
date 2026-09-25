@@ -26,7 +26,7 @@
          -  Email ID and phone number of the user
          -  Employee ID  
 
-- **Order Intake & Parsing:** 
+- **Orders tab:** 
 
    - The system must automatically capture incoming orders by monitoring a Gmail account in the background, receiving web hooks, or allowing manual entry on the dashboard. 
 
@@ -34,7 +34,23 @@
 
    - If the AI is unsure about the data or if important details are missing, the system must pause the order and place it in a pending_review status. 
 
-   - When an order is paused, the platform must automatically email the buyer to ask for the missing information. Once the buyer replies, the system must merge their new answer with the original order context to complete the booking. 
+   - When an order is paused, the platform must automatically email the buyer to ask for the missing information. Once the buyer replies, the system must merge their new answer with the original order context to complete the booking.
+ 
+   - This must show the following:
+      - a> Order ID
+      - b> Name of the customer
+      - c> Date and time of latest communication
+      - e> Status of the order in one of these categories, (Pending: Incomplete information, In review: Waiting for confirmation from owner, In discussion: Ongoing price negotation, In production: Order confirmed for production and delivered)
+      - d> Information and delete icon for details and discarding the order
+In the detailed information of the order, it must list
+      - a> Order ID
+      - b> Name of the customer
+      - c> Email Id of the customer
+      - d> Phone number of the customer
+      - e> Order details icon which will list all the units ordered (Eg: Black cotton shirt in S and L size, White woollen shirt in XL,S and M size)
+      - f> Price quotation option with options to quote multiple times and confirm
+      - g> Production stage (Displaying the stage of production and % completed and expected date of completion)
+
 
 - **Dynamic Costing & Pricing Engine:** 
 
